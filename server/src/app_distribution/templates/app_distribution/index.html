@@ -1,0 +1,247 @@
+{% extends 'app_distribution/base.html' %}
+{% load static %}
+
+{% block title %}AXPHONE App Distribution - Home{% endblock %}
+
+{% block content %}
+<!-- Hero Section -->
+<section class="hero-section">
+    <div class="container">
+        <div class="row align-items-center">
+            <div class="col-lg-8">
+                <h1 class="display-4 fw-bold mb-3">
+                    <i class="bi bi-app-indicator me-3"></i>
+                    Distribuzione App AXPHONE
+                </h1>
+                <p class="lead mb-4">
+                    Scarica e installa le ultime versioni delle app AXPHONE per iOS e Android.
+                    Sistema sicuro e controllato, simile a TestFlight.
+                </p>
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <div class="feature-icon">
+                            <i class="bi bi-shield-check fs-4"></i>
+                        </div>
+                        <h6 class="fw-bold">Sicuro</h6>
+                        <small>Distribuzione controllata e autenticata</small>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="feature-icon">
+                            <i class="bi bi-lightning fs-4"></i>
+                        </div>
+                        <h6 class="fw-bold">Veloce</h6>
+                        <small>Download e installazione rapidi</small>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="feature-icon">
+                            <i class="bi bi-phone fs-4"></i>
+                        </div>
+                        <h6 class="fw-bold">Multi-Platform</h6>
+                        <small>Supporto iOS e Android</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-4 text-center">
+                <div class="stats-card p-4">
+                    <h3 class="fw-bold">{{ total_builds }}</h3>
+                    <p class="mb-2">Build Disponibili</p>
+                    <div class="row g-2 text-center">
+                        <div class="col-6">
+                            <div class="bg-white bg-opacity-25 rounded p-2">
+                                <i class="bi bi-apple fs-4"></i>
+                                <div class="fw-bold">{{ ios_builds }}</div>
+                                <small>iOS</small>
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="bg-white bg-opacity-25 rounded p-2">
+                                <i class="bi bi-android2 fs-4"></i>
+                                <div class="fw-bold">{{ android_builds }}</div>
+                                <small>Android</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- User Info and Filter Section -->
+<div class="container mb-4">
+    <div class="row justify-content-between align-items-center">
+        <div class="col-md-6">
+            <div class="d-flex align-items-center">
+                <span class="text-white me-3">
+                    <i class="bi bi-person-circle me-1"></i>
+                    Ciao, {{ user.username }}!
+                </span>
+                <a href="{% url 'app_distribution:logout' %}" class="btn btn-outline-light btn-sm">
+                    <i class="bi bi-box-arrow-right me-1"></i>Logout
+                </a>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <ul class="nav nav-pills filter-tabs justify-content-end">
+                <li class="nav-item">
+                    <a class="nav-link {% if not platform_filter %}active{% endif %}" href="{% url 'app_distribution:index' %}">
+                        <i class="bi bi-grid me-1"></i>Tutte
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link {% if platform_filter == 'ios' %}active{% endif %}" href="?platform=ios">
+                        <i class="bi bi-apple me-1"></i>iOS
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link {% if platform_filter == 'android' %}active{% endif %}" href="?platform=android">
+                        <i class="bi bi-android2 me-1"></i>Android
+                    </a>
+                </li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<!-- Apps Grid -->
+<div class="container">
+    {% if builds %}
+    <div class="row g-4">
+        {% for build in builds %}
+        <div class="col-lg-4 col-md-6">
+            <div class="card app-card h-100 shadow-sm">
+                <div class="card-body">
+                    <div class="d-flex align-items-start mb-3">
+                        <div class="me-3">
+                            {% if build.icon %}
+                            <img src="{{ build.icon.url }}" alt="{{ build.name }}" class="app-icon">
+                            {% else %}
+                            <div class="app-icon bg-primary d-flex align-items-center justify-content-center text-white">
+                                <i class="bi bi-app fs-2"></i>
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div class="flex-grow-1">
+                            <h5 class="card-title mb-1">{{ build.name }}</h5>
+                            <p class="text-muted mb-2">v{{ build.version }} ({{ build.build_number }})</p>
+                            <span class="platform-badge {% if build.platform == 'ios' %}ios-badge{% else %}android-badge{% endif %}">
+                                <i class="bi bi-{% if build.platform == 'ios' %}apple{% else %}android2{% endif %} me-1"></i>
+                                {{ build.get_platform_display }}
+                            </span>
+                        </div>
+                    </div>
+                    
+                    {% if build.description %}
+                    <p class="text-muted small mb-3">{{ build.description|truncatewords:15 }}</p>
+                    {% endif %}
+                    
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <small class="text-muted">
+                            <i class="bi bi-download me-1"></i>{{ build.download_count }} download
+                        </small>
+                        <small class="text-muted">
+                            <i class="bi bi-file-earmark me-1"></i>{{ build.file_size_mb }} MB
+                        </small>
+                    </div>
+                    
+                    <div class="d-flex justify-content-between align-items-center">
+                        <small class="text-muted">
+                            <i class="bi bi-calendar me-1"></i>{{ build.created_at|date:"d/m/Y" }}
+                        </small>
+                        {% if build.is_beta %}
+                        <span class="badge bg-warning text-dark">BETA</span>
+                        {% endif %}
+                    </div>
+                </div>
+                
+                <div class="card-footer bg-transparent border-0 pt-0">
+                    <div class="d-grid gap-2">
+                        <a href="{% url 'app_distribution:build_detail' build.id %}" class="btn btn-outline-primary">
+                            <i class="bi bi-info-circle me-1"></i>Dettagli
+                        </a>
+                        
+                        {% if user.is_authenticated %}
+                            {% if build.platform == 'ios' %}
+                            <button class="btn btn-primary download-btn" 
+                                    onclick="installIOS('itms-services://?action=download-manifest&url={{ request.scheme }}://{{ request.get_host }}{% url 'app_distribution:build_detail' build.id %}manifest/')">
+                                <i class="bi bi-apple me-1"></i>Installa su iOS
+                            </button>
+                            {% else %}
+                            <a href="{% url 'app_distribution:build_detail' build.id %}download/" class="btn btn-success download-btn">
+                                <i class="bi bi-android2 me-1"></i>Scarica APK
+                            </a>
+                            {% endif %}
+                        {% else %}
+                        <a href="/api/auth/login/" class="btn btn-outline-secondary">
+                            <i class="bi bi-lock me-1"></i>Login Richiesto
+                        </a>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <!-- Empty State -->
+    <div class="text-center py-5">
+        <div class="mb-4">
+            <i class="bi bi-inbox display-1 text-muted"></i>
+        </div>
+        <h3 class="text-muted mb-3">Nessuna app disponibile</h3>
+        <p class="text-muted mb-4">
+            {% if platform_filter %}
+            Non ci sono app {{ platform_filter|upper }} disponibili al momento.
+            {% else %}
+            Non ci sono app disponibili al momento.
+            {% endif %}
+        </p>
+        <a href="{% url 'app_distribution:index' %}" class="btn btn-primary">
+            <i class="bi bi-arrow-clockwise me-1"></i>Aggiorna
+        </a>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Help Section -->
+<div class="container mt-5">
+    <div class="row">
+        <div class="col-12">
+            <div class="card bg-light">
+                <div class="card-body">
+                    <h5 class="card-title">
+                        <i class="bi bi-question-circle me-2"></i>Come installare le app
+                    </h5>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6 class="fw-bold">
+                                <i class="bi bi-apple me-1"></i>iOS
+                            </h6>
+                            <ol class="small">
+                                <li>Tocca "Installa su iOS" dall'app desiderata</li>
+                                <li>Safari chiederà il permesso per installare l'app</li>
+                                <li>Tocca "Installa" per confermare</li>
+                                <li>L'app apparirà nella home screen</li>
+                                <li>Vai in Impostazioni > Generali > Gestione dispositivi</li>
+                                <li>Autorizza il certificato dello sviluppatore</li>
+                            </ol>
+                        </div>
+                        <div class="col-md-6">
+                            <h6 class="fw-bold">
+                                <i class="bi bi-android2 me-1"></i>Android
+                            </h6>
+                            <ol class="small">
+                                <li>Tocca "Scarica APK" dall'app desiderata</li>
+                                <li>Il file APK verrà scaricato sul dispositivo</li>
+                                <li>Apri il file APK scaricato</li>
+                                <li>Android potrebbe chiedere di autorizzare installazioni da fonti sconosciute</li>
+                                <li>Segui le istruzioni per completare l'installazione</li>
+                            </ol>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

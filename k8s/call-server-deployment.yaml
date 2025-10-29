@@ -1,0 +1,235 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: call-server
+  namespace: securevox
+  labels:
+    app: call-server
+    component: signaling
+    version: v1.0.0
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: call-server
+  template:
+    metadata:
+      labels:
+        app: call-server
+        component: signaling
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8001"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+      - name: call-server
+        image: securevox/call-server:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8001
+          name: http
+          protocol: TCP
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "8001"
+        - name: HOST
+          value: "0.0.0.0"
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: securevox-secrets
+              key: jwt-secret
+        - name: REDIS_URL
+          value: "redis://redis-cluster:6379"
+        - name: MAIN_SERVER_URL
+          value: "http://api-server:8000"
+        - name: TURN_SERVER_URL
+          value: "turn:turn-server:3478"
+        - name: TURN_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: securevox-secrets
+              key: turn-username
+        - name: TURN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: securevox-secrets
+              key: turn-password
+        - name: MAX_CONCURRENT_CALLS
+          value: "10000"
+        - name: RATE_LIMIT_WINDOW_MS
+          value: "60000"
+        - name: MAX_REQUESTS_PER_WINDOW
+          value: "1000"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8001
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 2
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config
+          readOnly: true
+        - name: logs-volume
+          mountPath: /app/logs
+      volumes:
+      - name: config-volume
+        configMap:
+          name: call-server-config
+      - name: logs-volume
+        emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - call-server
+              topologyKey: kubernetes.io/hostname
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: call-server
+  namespace: securevox
+  labels:
+    app: call-server
+    component: signaling
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8001"
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8001
+    targetPort: 8001
+    protocol: TCP
+    name: http
+  selector:
+    app: call-server
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: call-server-config
+  namespace: securevox
+data:
+  production.json: |
+    {
+      "server": {
+        "port": 8001,
+        "host": "0.0.0.0"
+      },
+      "redis": {
+        "cluster": {
+          "enableReadyCheck": false,
+          "redisOptions": {
+            "connectTimeout": 5000,
+            "lazyConnect": true,
+            "maxRetriesPerRequest": 3
+          }
+        }
+      },
+      "webrtc": {
+        "iceServers": [
+          {
+            "urls": ["stun:stun.l.google.com:19302"]
+          }
+        ]
+      },
+      "security": {
+        "rateLimiting": {
+          "windowMs": 60000,
+          "maxRequests": 1000
+        },
+        "cors": {
+          "origin": ["https://app.securevox.com"],
+          "credentials": true
+        }
+      },
+      "logging": {
+        "level": "info",
+        "format": "json"
+      }
+    }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: call-server-hpa
+  namespace: securevox
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: call-server
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Pods
+    pods:
+      metric:
+        name: active_websocket_connections
+      target:
+        type: AverageValue
+        averageValue: "100"
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60

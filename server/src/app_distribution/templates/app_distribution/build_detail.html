@@ -1,0 +1,383 @@
+{% extends 'app_distribution/base.html' %}
+{% load static %}
+
+{% block title %}{{ app_build.name }} v{{ app_build.version }} - AXPHONE Distribution{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <!-- Breadcrumb -->
+    <nav aria-label="breadcrumb" class="mb-4">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item">
+                <a href="{% url 'app_distribution:index' %}" class="text-decoration-none">
+                    <i class="bi bi-house"></i> Home
+                </a>
+            </li>
+            <li class="breadcrumb-item active">{{ app_build.name }}</li>
+        </ol>
+    </nav>
+
+    <div class="row">
+        <!-- Main Content -->
+        <div class="col-lg-8">
+            <!-- App Header -->
+            <div class="card shadow-sm mb-4">
+                <div class="card-body">
+                    <div class="d-flex align-items-start">
+                        <div class="me-4">
+                            {% if app_build.icon %}
+                            <img src="{{ app_build.icon.url }}" alt="{{ app_build.name }}" 
+                                 class="app-icon" style="width: 120px; height: 120px; border-radius: 25px;">
+                            {% else %}
+                            <div class="bg-primary d-flex align-items-center justify-content-center text-white" 
+                                 style="width: 120px; height: 120px; border-radius: 25px;">
+                                <i class="bi bi-app" style="font-size: 3rem;"></i>
+                            </div>
+                            {% endif %}
+                        </div>
+                        
+                        <div class="flex-grow-1">
+                            <h1 class="h2 fw-bold mb-2">{{ app_build.name }}</h1>
+                            <p class="text-muted mb-3">v{{ app_build.version }} (Build {{ app_build.build_number }})</p>
+                            
+                            <div class="d-flex flex-wrap gap-2 mb-3">
+                                <span class="platform-badge {% if app_build.platform == 'ios' %}ios-badge{% else %}android-badge{% endif %}">
+                                    <i class="bi bi-{% if app_build.platform == 'ios' %}apple{% else %}android2{% endif %} me-1"></i>
+                                    {{ app_build.get_platform_display }}
+                                </span>
+                                
+                                {% if app_build.is_beta %}
+                                <span class="badge bg-warning text-dark">BETA</span>
+                                {% endif %}
+                                
+                                <span class="badge bg-success">{{ app_build.get_status_display }}</span>
+                            </div>
+                            
+                            <div class="row g-3 text-muted small">
+                                <div class="col-sm-6">
+                                    <i class="bi bi-download me-1"></i>
+                                    {{ app_build.download_count }} download
+                                </div>
+                                <div class="col-sm-6">
+                                    <i class="bi bi-file-earmark me-1"></i>
+                                    {{ app_build.file_size_mb }} MB
+                                </div>
+                                <div class="col-sm-6">
+                                    <i class="bi bi-calendar me-1"></i>
+                                    {{ app_build.created_at|date:"d/m/Y H:i" }}
+                                </div>
+                                {% if app_build.min_os_version %}
+                                <div class="col-sm-6">
+                                    <i class="bi bi-phone me-1"></i>
+                                    Richiede {{ app_build.get_platform_display }} {{ app_build.min_os_version }}+
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Description and Release Notes -->
+            {% if app_build.description or app_build.release_notes %}
+            <div class="card shadow-sm mb-4">
+                <div class="card-body">
+                    {% if app_build.description %}
+                    <h5 class="card-title">Descrizione</h5>
+                    <p class="card-text">{{ app_build.description|linebreaks }}</p>
+                    {% endif %}
+                    
+                    {% if app_build.release_notes %}
+                    <h5 class="card-title {% if app_build.description %}mt-4{% endif %}">Note di Rilascio</h5>
+                    <div class="card-text">{{ app_build.release_notes|linebreaks }}</div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Feedback Section -->
+            {% if feedback %}
+            <div class="card shadow-sm">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="bi bi-chat-square-text me-2"></i>Feedback Utenti
+                    </h5>
+                </div>
+                <div class="card-body">
+                    {% for fb in feedback %}
+                    <div class="d-flex mb-3 {% if not forloop.last %}border-bottom pb-3{% endif %}">
+                        <div class="me-3">
+                            <div class="bg-primary text-white rounded-circle d-flex align-items-center justify-content-center" 
+                                 style="width: 40px; height: 40px;">
+                                {{ fb.user.username|first|upper }}
+                            </div>
+                        </div>
+                        <div class="flex-grow-1">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <h6 class="mb-1">{{ fb.user.username }}</h6>
+                                <small class="text-muted">{{ fb.created_at|date:"d/m/Y" }}</small>
+                            </div>
+                            <div class="mb-2">
+                                {% for i in "12345" %}
+                                    {% if forloop.counter <= fb.rating %}
+                                    <i class="bi bi-star-fill text-warning"></i>
+                                    {% else %}
+                                    <i class="bi bi-star text-muted"></i>
+                                    {% endif %}
+                                {% endfor %}
+                            </div>
+                            {% if fb.comment %}
+                            <p class="mb-0 small">{{ fb.comment }}</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Sidebar -->
+        <div class="col-lg-4">
+            <!-- Download/Install Card -->
+            <div class="card shadow-sm mb-4 sticky-top" style="top: 2rem;">
+                <div class="card-header text-center">
+                    <h5 class="mb-0">
+                        <i class="bi bi-download me-2"></i>Installa App
+                    </h5>
+                </div>
+                <div class="card-body text-center">
+                    {% if user.is_authenticated %}
+                        {% if can_download %}
+                            {% if app_build.platform == 'ios' %}
+                            <!-- iOS Installation -->
+                            <div class="mb-3">
+                                <button class="btn btn-primary btn-lg download-btn w-100 mb-2" 
+                                        onclick="installIOS('{{ app_build.install_url }}')">
+                                    <i class="bi bi-apple me-2"></i>Installa su iOS
+                                </button>
+                                <small class="text-muted d-block">
+                                    <i class="bi bi-info-circle me-1"></i>
+                                    Funziona solo su dispositivi iOS
+                                </small>
+                            </div>
+                            
+                            <!-- Alternative download link -->
+                            <div class="mt-3">
+                                <button class="btn btn-outline-secondary btn-sm w-100" 
+                                        onclick="copyToClipboard('{{ app_build.install_url }}')">
+                                    <i class="bi bi-clipboard me-1"></i>Copia Link di Installazione
+                                </button>
+                            </div>
+                            
+                            <!-- QR Code for easier mobile access -->
+                            <div class="mt-3">
+                                <small class="text-muted d-block mb-2">Scansiona con iOS per installare:</small>
+                                <div id="qr-code" class="d-flex justify-content-center"></div>
+                            </div>
+                            
+                            {% else %}
+                            <!-- Android Installation -->
+                            <div class="mb-3">
+                                <a href="/api/app-distribution/builds/{{ app_build.id }}/download/" 
+                                   class="btn btn-success btn-lg download-btn w-100 mb-2">
+                                    <i class="bi bi-android2 me-2"></i>Scarica APK
+                                </a>
+                                <small class="text-muted d-block">
+                                    <i class="bi bi-info-circle me-1"></i>
+                                    File APK per Android
+                                </small>
+                            </div>
+                            {% endif %}
+                            
+                            <!-- Direct download link -->
+                            <div class="mt-3">
+                                <a href="{{ app_build.app_file.url }}" class="btn btn-outline-primary btn-sm w-100" download>
+                                    <i class="bi bi-download me-1"></i>Download Diretto
+                                </a>
+                            </div>
+                        {% else %}
+                        <div class="alert alert-warning">
+                            <i class="bi bi-exclamation-triangle me-2"></i>
+                            Non hai i permessi per scaricare questa build.
+                        </div>
+                        {% endif %}
+                    {% else %}
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle me-2"></i>
+                        Effettua il login per scaricare l'app.
+                    </div>
+                    <a href="/api/auth/login/" class="btn btn-primary btn-lg w-100">
+                        <i class="bi bi-box-arrow-in-right me-2"></i>Login
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- App Info Card -->
+            <div class="card shadow-sm mb-4">
+                <div class="card-header">
+                    <h6 class="mb-0">
+                        <i class="bi bi-info-circle me-2"></i>Informazioni App
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="row g-2 small">
+                        <div class="col-6 text-muted">Bundle ID:</div>
+                        <div class="col-6 text-end">
+                            <code class="small">{{ app_build.bundle_id }}</code>
+                        </div>
+                        
+                        <div class="col-6 text-muted">Versione:</div>
+                        <div class="col-6 text-end">{{ app_build.version }}</div>
+                        
+                        <div class="col-6 text-muted">Build:</div>
+                        <div class="col-6 text-end">{{ app_build.build_number }}</div>
+                        
+                        <div class="col-6 text-muted">Dimensione:</div>
+                        <div class="col-6 text-end">{{ app_build.file_size_mb }} MB</div>
+                        
+                        <div class="col-6 text-muted">Caricata da:</div>
+                        <div class="col-6 text-end">{{ app_build.uploaded_by.username }}</div>
+                        
+                        <div class="col-6 text-muted">Data:</div>
+                        <div class="col-6 text-end">{{ app_build.created_at|date:"d/m/Y" }}</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Feedback Form -->
+            {% if user.is_authenticated and can_download %}
+            <div class="card shadow-sm">
+                <div class="card-header">
+                    <h6 class="mb-0">
+                        <i class="bi bi-star me-2"></i>Lascia un Feedback
+                    </h6>
+                </div>
+                <div class="card-body">
+                    {% if user_feedback %}
+                    <div class="alert alert-success">
+                        <i class="bi bi-check-circle me-2"></i>
+                        Hai già lasciato un feedback per questa build.
+                    </div>
+                    {% else %}
+                    <form id="feedback-form">
+                        <div class="mb-3">
+                            <label class="form-label">Valutazione</label>
+                            <div class="rating-stars">
+                                {% for i in "12345" %}
+                                <i class="bi bi-star star-rating" data-rating="{{ forloop.counter }}"></i>
+                                {% endfor %}
+                            </div>
+                            <input type="hidden" id="rating-input" name="rating" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="comment" class="form-label">Commento (opzionale)</label>
+                            <textarea class="form-control" id="comment" name="comment" rows="3" 
+                                      placeholder="Condividi la tua esperienza con questa build..."></textarea>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-primary w-100">
+                            <i class="bi bi-send me-1"></i>Invia Feedback
+                        </button>
+                    </form>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script>
+// Generate QR Code for iOS installation
+{% if app_build.platform == 'ios' and can_download %}
+QRCode.toCanvas(document.getElementById('qr-code'), '{{ app_build.install_url }}', {
+    width: 150,
+    margin: 2,
+    color: {
+        dark: '#000000',
+        light: '#FFFFFF'
+    }
+});
+{% endif %}
+
+// Star rating functionality
+document.querySelectorAll('.star-rating').forEach(star => {
+    star.addEventListener('click', function() {
+        const rating = parseInt(this.dataset.rating);
+        document.getElementById('rating-input').value = rating;
+        
+        // Update star display
+        document.querySelectorAll('.star-rating').forEach((s, index) => {
+            if (index < rating) {
+                s.classList.remove('bi-star');
+                s.classList.add('bi-star-fill', 'text-warning');
+            } else {
+                s.classList.remove('bi-star-fill', 'text-warning');
+                s.classList.add('bi-star');
+            }
+        });
+    });
+    
+    // Hover effects
+    star.addEventListener('mouseenter', function() {
+        const rating = parseInt(this.dataset.rating);
+        document.querySelectorAll('.star-rating').forEach((s, index) => {
+            if (index < rating) {
+                s.classList.add('text-warning');
+            }
+        });
+    });
+    
+    star.addEventListener('mouseleave', function() {
+        const currentRating = document.getElementById('rating-input').value;
+        document.querySelectorAll('.star-rating').forEach((s, index) => {
+            if (index >= currentRating) {
+                s.classList.remove('text-warning');
+            }
+        });
+    });
+});
+
+// Feedback form submission
+document.getElementById('feedback-form')?.addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const formData = new FormData(this);
+    formData.append('app_build', '{{ app_build.id }}');
+    
+    fetch('/api/app-distribution/feedback/', {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'X-CSRFToken': '{{ csrf_token }}'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.id) {
+            // Success
+            const alert = document.createElement('div');
+            alert.className = 'alert alert-success';
+            alert.innerHTML = '<i class="bi bi-check-circle me-2"></i>Grazie per il tuo feedback!';
+            
+            const form = document.getElementById('feedback-form');
+            form.parentNode.replaceChild(alert, form);
+        } else {
+            // Error
+            console.error('Error:', data);
+            alert('Errore nell\'invio del feedback. Riprova più tardi.');
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Errore nell\'invio del feedback. Riprova più tardi.');
+    });
+});
+</script>
+{% endblock %}

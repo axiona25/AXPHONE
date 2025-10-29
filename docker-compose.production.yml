@@ -1,0 +1,434 @@
+# SecureVox Production - Digital Ocean Deployment
+version: '3.8'
+
+networks:
+  securevox-backend:
+    driver: overlay
+    encrypted: true
+  securevox-frontend:
+    driver: overlay
+  securevox-internal:
+    driver: overlay
+    internal: true
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  media_data:
+    driver: local
+  logs_data:
+    driver: local
+  ssl_certs:
+    driver: local
+
+services:
+  # === LOAD BALANCER & REVERSE PROXY ===
+  traefik:
+    image: traefik:v3.0
+    container_name: securevox-traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Dashboard
+    command:
+      - --api.dashboard=true
+      - --api.insecure=false
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+      - --log.level=INFO
+      - --accesslog=true
+      - --metrics.prometheus=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ssl_certs:/letsencrypt
+    networks:
+      - securevox-frontend
+    environment:
+      - TRAEFIK_API_INSECURE=false
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.traefik.rule=Host(`monitor.${DOMAIN}`)
+      - traefik.http.routers.traefik.tls.certresolver=letsencrypt
+      - traefik.http.routers.traefik.service=api@internal
+      - traefik.http.middlewares.auth.basicauth.users=${TRAEFIK_AUTH}
+
+  # === DATABASE CLUSTER ===
+  postgres-primary:
+    image: postgres:16-alpine
+    container_name: securevox-postgres-primary
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPL_USER}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPL_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/postgres-init:/docker-entrypoint-initdb.d
+    networks:
+      - securevox-internal
+    command: >
+      postgres
+      -c wal_level=replica
+      -c max_wal_senders=3
+      -c max_replication_slots=3
+      -c hot_standby=on
+      -c shared_preload_libraries=pg_stat_statements
+      -c log_statement=all
+      -c log_min_duration_statement=1000
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  postgres-replica:
+    image: postgres:16-alpine
+    container_name: securevox-postgres-replica
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGUSER: ${POSTGRES_REPL_USER}
+      PGPASSWORD: ${POSTGRES_REPL_PASSWORD}
+    volumes:
+      - ./scripts/postgres-replica:/docker-entrypoint-initdb.d
+    networks:
+      - securevox-internal
+    depends_on:
+      - postgres-primary
+
+  # === REDIS CLUSTER ===
+  redis-node-1:
+    image: redis:7-alpine
+    container_name: securevox-redis-1
+    restart: unless-stopped
+    ports:
+      - "7001:7001"
+    volumes:
+      - redis_data:/data
+      - ./config/redis/redis-cluster.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - securevox-internal
+    command: redis-server /usr/local/etc/redis/redis.conf --port 7001 --cluster-enabled yes
+
+  redis-node-2:
+    image: redis:7-alpine
+    container_name: securevox-redis-2
+    restart: unless-stopped
+    ports:
+      - "7002:7002"
+    volumes:
+      - ./config/redis/redis-cluster.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - securevox-internal
+    command: redis-server /usr/local/etc/redis/redis.conf --port 7002 --cluster-enabled yes
+
+  redis-node-3:
+    image: redis:7-alpine
+    container_name: securevox-redis-3
+    restart: unless-stopped
+    ports:
+      - "7003:7003"
+    volumes:
+      - ./config/redis/redis-cluster.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - securevox-internal
+    command: redis-server /usr/local/etc/redis/redis.conf --port 7003 --cluster-enabled yes
+
+  # === MAIN API SERVER ===
+  api-server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.production
+    image: securevox/api-server:${VERSION:-latest}
+    container_name: securevox-api
+    restart: unless-stopped
+    environment:
+      - DEBUG=0
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - POSTGRES_HOST=postgres-primary
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_URL=redis://redis-node-1:7001,redis-node-2:7002,redis-node-3:7003
+      - ALLOWED_HOSTS=${DOMAIN},api.${DOMAIN}
+      - CORS_ALLOWED_ORIGINS=https://${DOMAIN},https://app.${DOMAIN}
+    volumes:
+      - media_data:/app/media
+      - logs_data:/app/logs
+    networks:
+      - securevox-backend
+      - securevox-internal
+    depends_on:
+      - postgres-primary
+      - redis-node-1
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.api.rule=Host(`api.${DOMAIN}`)
+      - traefik.http.routers.api.tls.certresolver=letsencrypt
+      - traefik.http.services.api.loadbalancer.server.port=8000
+      - traefik.http.middlewares.api-cors.headers.accesscontrolallowmethods=GET,OPTIONS,PUT,POST,DELETE
+      - traefik.http.middlewares.api-cors.headers.accesscontrolalloworigin=*
+      - traefik.http.middlewares.api-cors.headers.accesscontrolallowheaders=*
+
+  # === CALL SERVER (WebRTC Signaling) ===
+  call-server:
+    build:
+      context: ./call-server
+      dockerfile: Dockerfile.production
+    image: securevox/call-server:${VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=8001
+      - JWT_SECRET=${JWT_SECRET}
+      - MAIN_SERVER_URL=http://api-server:8000
+      - REDIS_URL=redis://redis-node-1:7001,redis-node-2:7002,redis-node-3:7003
+      - TURN_SERVER_URL=turn:turn-server:3478
+      - TURN_USERNAME=${TURN_USERNAME}
+      - TURN_PASSWORD=${TURN_PASSWORD}
+    networks:
+      - securevox-backend
+      - securevox-internal
+    depends_on:
+      - redis-node-1
+      - api-server
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.calls.rule=Host(`calls.${DOMAIN}`)
+      - traefik.http.routers.calls.tls.certresolver=letsencrypt
+      - traefik.http.services.calls.loadbalancer.server.port=8001
+      - traefik.http.middlewares.calls-cors.headers.accesscontrolalloworigin=*
+
+  # === NOTIFICATION SERVER ===
+  notify-server:
+    build:
+      context: ./notify-server
+      dockerfile: Dockerfile.production
+    image: securevox/notify-server:${VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=8002
+      - FIREBASE_SERVICE_ACCOUNT=${FIREBASE_SERVICE_ACCOUNT}
+      - APNS_KEY=${APNS_KEY}
+      - REDIS_URL=redis://redis-node-1:7001
+    networks:
+      - securevox-backend
+      - securevox-internal
+    depends_on:
+      - redis-node-1
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.notify.rule=Host(`notify.${DOMAIN}`)
+      - traefik.http.routers.notify.tls.certresolver=letsencrypt
+
+  # === TURN/STUN SERVER ===
+  turn-server:
+    image: coturn/coturn:alpine
+    container_name: securevox-turn
+    restart: unless-stopped
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "49160-49200:49160-49200/udp"
+    volumes:
+      - ./config/coturn/turnserver.conf:/etc/coturn/turnserver.conf
+      - ssl_certs:/etc/ssl/certs:ro
+    networks:
+      - securevox-backend
+    command: [
+      "-n",
+      "--log-file=stdout",
+      "--use-auth-secret",
+      "--static-auth-secret=${TURN_SECRET}",
+      "--realm=${DOMAIN}",
+      "--total-quota=100",
+      "--bps-capacity=0",
+      "--stale-nonce",
+      "--cert=/etc/ssl/certs/cert.pem",
+      "--pkey=/etc/ssl/certs/key.pem",
+      "--no-stdout-log"
+    ]
+
+  # === WORKER PROCESSES ===
+  celery-worker:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.production
+    image: securevox/api-server:${VERSION:-latest}
+    restart: unless-stopped
+    command: celery -A src worker --loglevel=info --concurrency=4
+    environment:
+      - DEBUG=0
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - POSTGRES_HOST=postgres-primary
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_URL=redis://redis-node-1:7001
+    volumes:
+      - media_data:/app/media
+      - logs_data:/app/logs
+    networks:
+      - securevox-internal
+    depends_on:
+      - postgres-primary
+      - redis-node-1
+    deploy:
+      replicas: 2
+
+  celery-beat:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.production
+    image: securevox/api-server:${VERSION:-latest}
+    restart: unless-stopped
+    command: celery -A src beat --loglevel=info
+    environment:
+      - DEBUG=0
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - POSTGRES_HOST=postgres-primary
+      - REDIS_URL=redis://redis-node-1:7001
+    networks:
+      - securevox-internal
+    depends_on:
+      - postgres-primary
+      - redis-node-1
+
+  # === MONITORING STACK ===
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: securevox-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./config/prometheus/rules:/etc/prometheus/rules
+    networks:
+      - securevox-internal
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: securevox-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards
+    networks:
+      - securevox-internal
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.grafana.rule=Host(`metrics.${DOMAIN}`)
+      - traefik.http.routers.grafana.tls.certresolver=letsencrypt
+
+  # === LOG AGGREGATION ===
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: securevox-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    volumes:
+      - ./data/elasticsearch:/usr/share/elasticsearch/data
+    networks:
+      - securevox-internal
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.0
+    container_name: securevox-logstash
+    restart: unless-stopped
+    volumes:
+      - ./config/logstash/pipeline:/usr/share/logstash/pipeline
+      - logs_data:/app/logs:ro
+    networks:
+      - securevox-internal
+    depends_on:
+      - elasticsearch
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: securevox-kibana
+    restart: unless-stopped
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    networks:
+      - securevox-internal
+    depends_on:
+      - elasticsearch
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.kibana.rule=Host(`logs.${DOMAIN}`)
+      - traefik.http.routers.kibana.tls.certresolver=letsencrypt
+
+  # === BACKUP SERVICE ===
+  backup:
+    build:
+      context: ./scripts/backup
+      dockerfile: Dockerfile
+    image: securevox/backup:${VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      - POSTGRES_HOST=postgres-primary
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - S3_BUCKET=${BACKUP_S3_BUCKET}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - BACKUP_SCHEDULE=0 2 * * *  # Daily at 2 AM
+    volumes:
+      - media_data:/app/media:ro
+      - postgres_data:/app/postgres:ro
+    networks:
+      - securevox-internal
+    depends_on:
+      - postgres-primary

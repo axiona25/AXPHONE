@@ -1,0 +1,11 @@
+general: {
+  events = true
+  permissions = "disabled"
+}
+room-1234: {
+  description = "SecureVOX Room"
+  secret = "change-me"
+  publishers = 50
+  bitrate = 1024000
+  fir_freq = 10
+}

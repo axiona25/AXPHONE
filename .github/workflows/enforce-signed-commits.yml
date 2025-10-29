@@ -1,0 +1,17 @@
+name: Enforce Signed Commits
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Verify signatures
+        run: |
+          set -e
+          UNSIGNED=$(git log --pretty=format:'%H %G?' origin/main..HEAD 2>/dev/null || true | awk '$2!="G" && $2!="U"{print $1}')
+          if [ -n "$UNSIGNED" ]; then
+            echo "Found unsigned commits:"
+            echo "$UNSIGNED"
+            exit 1
+          fi

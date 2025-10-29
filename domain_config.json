@@ -1,0 +1,15 @@
+{
+  "domain": "securevox.it",
+  "server_ip": "130.110.3.186",
+  "services": {
+    "django_backend": "http://securevox.it:8001",
+    "call_server": "http://securevox.it:8002",
+    "notify_server": "http://securevox.it:8003",
+    "app_distribution": "http://securevox.it:8001/app-distribution/"
+  },
+  "mobile_config": {
+    "api_base_url": "http://securevox.it:8001",
+    "websocket_url": "ws://securevox.it:8002",
+    "notify_url": "ws://securevox.it:8003"
+  }
+}

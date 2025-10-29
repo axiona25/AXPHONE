@@ -1,0 +1,96 @@
+# SecureVox Call Server - Production Dockerfile
+# Multi-stage build per ottimizzazione enterprise
+
+# === BUILD STAGE ===
+FROM node:20-alpine AS builder
+
+# Installa dipendenze di build
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    git \
+    && rm -rf /var/cache/apk/*
+
+# Crea utente non-root per sicurezza
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S securevox -u 1001
+
+WORKDIR /app
+
+# Copia file di configurazione
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# Installa dipendenze con ottimizzazioni
+RUN npm ci --only=production --no-audit --no-fund && \
+    npm cache clean --force
+
+# Copia codice sorgente
+COPY src/ ./src/
+COPY config/ ./config/
+
+# Build TypeScript se necessario
+# RUN npm run build
+
+# === PRODUCTION STAGE ===
+FROM node:20-alpine AS production
+
+# Installa dipendenze di runtime e sicurezza
+RUN apk add --no-cache \
+    dumb-init \
+    curl \
+    ca-certificates \
+    && rm -rf /var/cache/apk/* \
+    && update-ca-certificates
+
+# Crea utente non-root
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S securevox -u 1001
+
+# Crea directory con permessi corretti
+RUN mkdir -p /app/logs /app/config /app/tmp && \
+    chown -R securevox:nodejs /app
+
+WORKDIR /app
+
+# Copia dipendenze da build stage
+COPY --from=builder --chown=securevox:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=securevox:nodejs /app/package*.json ./
+
+# Copia applicazione
+COPY --chown=securevox:nodejs src/ ./src/
+COPY --chown=securevox:nodejs config/ ./config/
+
+# Variabili di ambiente per produzione
+ENV NODE_ENV=production \
+    PORT=8001 \
+    HOST=0.0.0.0 \
+    NODE_OPTIONS="--max-old-space-size=2048" \
+    UV_THREADPOOL_SIZE=16
+
+# Esponi porta
+EXPOSE 8001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8001/health || exit 1
+
+# Usa dumb-init per gestione segnali
+ENTRYPOINT ["dumb-init", "--"]
+
+# Cambia a utente non-root
+USER securevox
+
+# Comando di avvio
+CMD ["node", "src/server.js"]
+
+# Labels per metadata
+LABEL maintainer="SecureVox Team" \
+      version="1.0.0" \
+      description="SecureVox WebRTC Signaling Server" \
+      org.opencontainers.image.title="SecureVox Call Server" \
+      org.opencontainers.image.description="Enterprise WebRTC Signaling Server" \
+      org.opencontainers.image.version="1.0.0" \
+      org.opencontainers.image.vendor="SecureVox" \
+      org.opencontainers.image.licenses="MIT"

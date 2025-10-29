@@ -1,0 +1,81 @@
+{
+  "timestamp": "2025-09-22T09:41:27.501004",
+  "deployment_type": "oracle_cloud_50_users",
+  "instances": [
+    {
+      "name": "securevox-main-50u",
+      "shape": "VM.Standard.A1.Flex",
+      "ocpus": 2,
+      "memory_gb": 12,
+      "storage_gb": 30,
+      "services": [
+        "Django Backend (Gunicorn 3 workers)",
+        "PostgreSQL Database",
+        "Redis Cache/Sessions",
+        "Nginx Reverse Proxy",
+        "Celery Worker (2 processes)",
+        "Monitoring (Prometheus)"
+      ],
+      "capacity": {
+        "max_registered_users": 50,
+        "max_concurrent_active_users": 15,
+        "max_api_requests_per_minute": 500,
+        "database_connections": 20
+      }
+    },
+    {
+      "name": "securevox-calls-50u",
+      "shape": "VM.Standard.A1.Flex",
+      "ocpus": 2,
+      "memory_gb": 12,
+      "storage_gb": 20,
+      "services": [
+        "Node.js Call Server",
+        "Janus WebRTC Gateway",
+        "STUN/TURN Server",
+        "Call Recording (optional)",
+        "WebSocket Manager"
+      ],
+      "capacity": {
+        "max_concurrent_calls": 10,
+        "max_participants_per_call": 4,
+        "max_total_participants": 40,
+        "websocket_connections": 200
+      }
+    }
+  ],
+  "networking": {
+    "vcn_cidr": "10.0.0.0/16",
+    "public_subnet": "10.0.1.0/24",
+    "security_groups": [
+      "SSH (22) - Admin only",
+      "HTTP (80) - Public",
+      "HTTPS (443) - Public",
+      "Django (8000) - Internal",
+      "Call Server (3001) - Public",
+      "Janus HTTP (8088) - Internal",
+      "Janus WebSocket (8188) - Public",
+      "RTP/UDP (20000-20010) - Public"
+    ]
+  },
+  "monitoring": {
+    "metrics_collection_interval": 60,
+    "log_retention_days": 7,
+    "alert_thresholds": {
+      "active_users_warning": 40,
+      "active_users_critical": 48,
+      "concurrent_calls_warning": 8,
+      "concurrent_calls_critical": 9,
+      "memory_usage_warning": 80,
+      "memory_usage_critical": 90,
+      "disk_usage_warning": 70,
+      "disk_usage_critical": 85
+    }
+  },
+  "backup_strategy": {
+    "database_backup_frequency": "daily",
+    "media_backup_frequency": "weekly",
+    "retention_period_days": 7,
+    "backup_location": "local_storage_only"
+  }
+}

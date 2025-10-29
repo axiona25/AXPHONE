@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: securevox
+  labels:
+    name: securevox
+    environment: production
+    app.kubernetes.io/name: securevox
+    app.kubernetes.io/version: "1.0.0"
+---
+# Resource Quota per controllo risorse
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: securevox-quota
+  namespace: securevox
+spec:
+  hard:
+    requests.cpu: "10"
+    requests.memory: 20Gi
+    limits.cpu: "20"
+    limits.memory: 40Gi
+    persistentvolumeclaims: "10"
+    services: "20"
+    secrets: "30"
+    configmaps: "30"
+---
+# Network Policy per sicurezza
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: securevox-network-policy
+  namespace: securevox
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: securevox
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: securevox
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80

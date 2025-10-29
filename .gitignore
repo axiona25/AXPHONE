@@ -1,0 +1,27 @@
+# General
+.DS_Store
+.env
+.env.*
+*.log
+*.sqlite3
+__pycache__/
+*.pyc
+# Node
+node_modules/
+# Flutter
+.build/
+.melos_tool/
+.dart_tool/
+.packages
+pubspec.lock
+build/
+# Python
+venv/
+.envrc
+# Terraform
+.terraform/
+terraform.tfstate*
+# Docker
+**/.idea
+**/.vscode
+dist/

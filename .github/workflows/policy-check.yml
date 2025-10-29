@@ -1,0 +1,11 @@
+name: Repo Policy Check
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify CODEOWNERS exists
+        run: test -f CODEOWNERS
+      - name: Verify SECURITY policy
+        run: test -f SECURITY.md

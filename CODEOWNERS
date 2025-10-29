@@ -1,0 +1,6 @@
+# Imposta i code owners per revisione obbligatoria
+*       @securevox/sec-team
+/server/ @securevox/backend
+/mobile/ @securevox/mobile
+/admin/  @securevox/frontend
+/infra/  @securevox/devops

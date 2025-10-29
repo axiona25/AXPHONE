@@ -1,0 +1,98 @@
+# SecureVox API Server - Production Dockerfile
+# Multi-stage build per ottimizzazione Django enterprise
+
+# === BUILD STAGE ===
+FROM python:3.12-slim AS builder
+
+# Installa dipendenze di build
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    libssl-dev \
+    libffi-dev \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Crea ambiente virtuale
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copia requirements
+COPY requirements.txt requirements_office.txt ./
+
+# Installa dipendenze Python
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir -r requirements_office.txt
+
+# === PRODUCTION STAGE ===
+FROM python:3.12-slim AS production
+
+# Installa dipendenze di runtime
+RUN apt-get update && apt-get install -y \
+    libpq5 \
+    libssl3 \
+    curl \
+    dumb-init \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Crea utente non-root per sicurezza
+RUN groupadd -r securevox && useradd --no-log-init -r -g securevox securevox
+
+# Copia ambiente virtuale da build stage
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Crea directory applicazione
+RUN mkdir -p /app/media /app/static /app/logs && \
+    chown -R securevox:securevox /app
+
+WORKDIR /app
+
+# Copia codice applicazione
+COPY --chown=securevox:securevox . .
+
+# Variabili di ambiente per produzione
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DJANGO_SETTINGS_MODULE=src.settings \
+    DEBUG=0 \
+    PYTHONPATH=/app
+
+# Esegui collectstatic come root per permessi
+RUN python manage.py collectstatic --noinput --clear
+
+# Cambia ownership finale
+RUN chown -R securevox:securevox /app
+
+# Esponi porta
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/api/health/ || exit 1
+
+# Script di avvio
+COPY --chown=securevox:securevox scripts/docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Usa dumb-init per gestione segnali
+ENTRYPOINT ["dumb-init", "--"]
+
+# Cambia a utente non-root
+USER securevox
+
+# Comando di avvio
+CMD ["/usr/local/bin/docker-entrypoint.sh"]
+
+# Labels per metadata
+LABEL maintainer="SecureVox Team" \
+      version="1.0.0" \
+      description="SecureVox Django API Server" \
+      org.opencontainers.image.title="SecureVox API Server" \
+      org.opencontainers.image.description="Enterprise Django API Server" \
+      org.opencontainers.image.version="1.0.0" \
+      org.opencontainers.image.vendor="SecureVox" \
+      org.opencontainers.image.licenses="MIT"

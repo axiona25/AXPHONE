@@ -1,0 +1,22 @@
+general: {
+  configs_folder = "/usr/local/etc/janus"
+  debug_level = 4
+  log_to_stdout = true
+  # Abilita E2EE a livello applicativo (SFrame): le chiavi sono gestite lato client.
+  e2ee = true
+}
+nat: {
+  stun_server = "stun.l.google.com"
+  stun_port = 19302
+}
+media: {
+  rtp_port_range = "20000-40000"
+}
+plugins: {
+  # videoroom plugin per 1:many
+  disable = false
+}
+transports: {
+  http = true
+  websockets = true
+}

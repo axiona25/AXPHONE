@@ -1,0 +1,399 @@
+import React, { useState, useEffect } from 'react';
+import {
+  Box,
+  Grid,
+  Typography,
+  Card,
+  CardContent,
+  CircularProgress,
+  Alert,
+  Paper,
+  Chip,
+  Tooltip,
+  IconButton,
+} from '@mui/material';
+import {
+  People,
+  Computer,
+  Message,
+  Phone,
+  Security,
+  Storage,
+  Wifi,
+  WifiOff,
+  Refresh,
+  CloudOff,
+  CloudDone,
+} from '@mui/icons-material';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
+import StatsCard from './StatsCard';
+import { useRealtimeDashboard, useRealtimeSystemHealth, useRealtimeNotifications, useWebSocketConnection } from '../../hooks/useRealtimeData';
+import { securevoxColors } from '../../theme/securevoxTheme';
+
+const Dashboard: React.FC = () => {
+  // Hook per dati real-time
+  const dashboardData = useRealtimeDashboard({
+    pollingInterval: 10000, // 10 secondi
+    enableWebSocket: true,
+    enablePolling: true,
+  });
+
+  const systemHealthData = useRealtimeSystemHealth({
+    pollingInterval: 5000, // 5 secondi
+    enableWebSocket: true,
+    enablePolling: true,
+  });
+
+  const notifications = useRealtimeNotifications();
+  const connection = useWebSocketConnection();
+
+  // Alias per compatibilità
+  const stats = dashboardData.data;
+  const systemHealth = systemHealthData.data;
+  const loading = dashboardData.loading;
+  const error = dashboardData.error || systemHealthData.error;
+  const lastUpdate = dashboardData.lastUpdate || systemHealthData.lastUpdate;
+
+  // Dati per i grafici (mock per ora)
+  const chartData = [
+    { name: 'Gen', users: 4000, messages: 2400, calls: 2400 },
+    { name: 'Feb', users: 3000, messages: 1398, calls: 2210 },
+    { name: 'Mar', users: 2000, messages: 9800, calls: 2290 },
+    { name: 'Apr', users: 2780, messages: 3908, calls: 2000 },
+    { name: 'Mag', users: 1890, messages: 4800, calls: 2181 },
+    { name: 'Giu', users: 2390, messages: 3800, calls: 2500 },
+  ];
+
+  const pieData = [
+    { name: 'Android', value: stats?.devices.by_type.android || 0, color: '#26A884' },
+    { name: 'iOS', value: stats?.devices.by_type.ios || 0, color: '#0D7557' },
+    { name: 'Web', value: stats?.devices.by_type.web || 0, color: '#4FC3A1' },
+    { name: 'Desktop', value: stats?.devices.by_type.desktop || 0, color: '#2D8A6F' },
+  ];
+
+  if (loading && !stats) {
+    return (
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          height: '50vh',
+        }}
+      >
+        <CircularProgress size={60} sx={{ color: securevoxColors.primary }} />
+      </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Alert severity="error" sx={{ mb: 3 }}>
+        {error}
+      </Alert>
+    );
+  }
+
+  return (
+    <Box>
+      {/* Header */}
+      <Box sx={{ mb: 4 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+          <Typography variant="h4" sx={{ fontWeight: 700 }}>
+            Dashboard
+          </Typography>
+          
+          {/* Status di connessione */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Chip
+              icon={connection.isConnected ? <CloudDone /> : <CloudOff />}
+              label={connection.isConnected ? 'Real-time Attivo' : 'Real-time Disconnesso'}
+              color={connection.isConnected ? 'success' : 'error'}
+              size="small"
+            />
+            
+            {notifications.unreadCount > 0 && (
+              <Chip
+                label={`${notifications.unreadCount} notifiche`}
+                color="warning"
+                size="small"
+              />
+            )}
+            
+            <Tooltip title="Aggiorna manualmente">
+              <IconButton
+                onClick={() => {
+                  dashboardData.refresh();
+                  systemHealthData.refresh();
+                }}
+                disabled={loading}
+                sx={{ color: securevoxColors.primary }}
+              >
+                <Refresh />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        </Box>
+        
+        <Typography variant="body2" color="textSecondary">
+          Ultimo aggiornamento: {lastUpdate?.toLocaleTimeString('it-IT') || 'Mai'}
+          {connection.isConnected && (
+            <span style={{ marginLeft: 8, color: securevoxColors.success }}>
+              • Aggiornamento automatico attivo
+            </span>
+          )}
+        </Typography>
+      </Box>
+
+      {/* Stats Cards */}
+      <Grid container spacing={3} sx={{ mb: 4 }}>
+        <Grid item xs={12} sm={6} md={3}>
+          <StatsCard
+            title="Utenti Totali"
+            value={stats?.users.total || 0}
+            subtitle={`${stats?.users.active_24h || 0} attivi oggi`}
+            icon={<People />}
+            trend={{
+              value: stats?.users.growth_rate || 0,
+              direction: stats?.users.growth_rate && stats.users.growth_rate > 0 ? 'up' : 'down',
+              period: 'vs mese scorso',
+            }}
+            onRefresh={dashboardData.refresh}
+            loading={loading}
+          />
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <StatsCard
+            title="Dispositivi Attivi"
+            value={stats?.devices.active || 0}
+            subtitle={`${stats?.devices.total || 0} totali`}
+            icon={<Computer />}
+            progress={{
+              value: stats?.devices.active || 0,
+              max: stats?.devices.total || 1,
+              label: 'Attivi',
+            }}
+            onRefresh={dashboardData.refresh}
+            loading={loading}
+          />
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <StatsCard
+            title="Messaggi Oggi"
+            value={stats?.messages.last_24h || 0}
+            subtitle={`${stats?.messages.total || 0} totali`}
+            icon={<Message />}
+            trend={{
+              value: Math.round(((stats?.messages.last_24h || 0) / (stats?.messages.last_7d || 1)) * 100 - 100),
+              direction: 'up',
+              period: 'vs settimana',
+            }}
+            onRefresh={dashboardData.refresh}
+            loading={loading}
+          />
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <StatsCard
+            title="Chiamate Oggi"
+            value={stats?.calls.last_24h || 0}
+            subtitle={`${Math.round(stats?.calls.average_duration || 0)}min media`}
+            icon={<Phone />}
+            onRefresh={dashboardData.refresh}
+            loading={loading}
+          />
+        </Grid>
+      </Grid>
+
+      {/* Charts Row */}
+      <Grid container spacing={3} sx={{ mb: 4 }}>
+        {/* Line Chart */}
+        <Grid item xs={12} md={8}>
+          <Card sx={{ height: 400 }}>
+            <CardContent>
+              <Typography variant="h6" sx={{ mb: 2 }}>
+                Attività Mensile
+              </Typography>
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" />
+                  <YAxis />
+                  <Tooltip />
+                  <Line
+                    type="monotone"
+                    dataKey="users"
+                    stroke={securevoxColors.primary}
+                    strokeWidth={3}
+                    name="Utenti"
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="messages"
+                    stroke={securevoxColors.secondary}
+                    strokeWidth={3}
+                    name="Messaggi"
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="calls"
+                    stroke="#FF9800"
+                    strokeWidth={3}
+                    name="Chiamate"
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Pie Chart */}
+        <Grid item xs={12} md={4}>
+          <Card sx={{ height: 400 }}>
+            <CardContent>
+              <Typography variant="h6" sx={{ mb: 2 }}>
+                Dispositivi per Tipo
+              </Typography>
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={pieData}
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={80}
+                    dataKey="value"
+                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                  >
+                    {pieData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+
+      {/* System Health & Security */}
+      <Grid container spacing={3}>
+        {/* System Health */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+                {systemHealth?.status === 'healthy' ? <Wifi color="success" /> : <WifiOff color="error" />}
+                Stato Sistema
+              </Typography>
+              
+              {systemHealth && (
+                <Box>
+                  <Box sx={{ mb: 2 }}>
+                    <Typography variant="body2" color="textSecondary" gutterBottom>
+                      CPU Usage: {systemHealth.system.cpu_usage.toFixed(1)}%
+                    </Typography>
+                    <Box sx={{ width: '100%', bgcolor: 'grey.200', borderRadius: 1, height: 8, mb: 1 }}>
+                      <Box
+                        sx={{
+                          width: `${systemHealth.system.cpu_usage}%`,
+                          bgcolor: systemHealth.system.cpu_usage > 80 ? 'error.main' : 'success.main',
+                          height: 8,
+                          borderRadius: 1,
+                        }}
+                      />
+                    </Box>
+                  </Box>
+
+                  <Box sx={{ mb: 2 }}>
+                    <Typography variant="body2" color="textSecondary" gutterBottom>
+                      Memoria: {systemHealth.system.memory_usage.toFixed(1)}%
+                    </Typography>
+                    <Box sx={{ width: '100%', bgcolor: 'grey.200', borderRadius: 1, height: 8, mb: 1 }}>
+                      <Box
+                        sx={{
+                          width: `${systemHealth.system.memory_usage}%`,
+                          bgcolor: systemHealth.system.memory_usage > 85 ? 'error.main' : 'warning.main',
+                          height: 8,
+                          borderRadius: 1,
+                        }}
+                      />
+                    </Box>
+                  </Box>
+
+                  <Box sx={{ mb: 2 }}>
+                    <Typography variant="body2" color="textSecondary" gutterBottom>
+                      Disco: {systemHealth.system.disk_usage.toFixed(1)}%
+                    </Typography>
+                    <Box sx={{ width: '100%', bgcolor: 'grey.200', borderRadius: 1, height: 8, mb: 1 }}>
+                      <Box
+                        sx={{
+                          width: `${systemHealth.system.disk_usage}%`,
+                          bgcolor: systemHealth.system.disk_usage > 90 ? 'error.main' : 'primary.main',
+                          height: 8,
+                          borderRadius: 1,
+                        }}
+                      />
+                    </Box>
+                  </Box>
+
+                  <Typography variant="body2" color="textSecondary">
+                    Health Score: {systemHealth.health_score.toFixed(0)}%
+                  </Typography>
+                </Box>
+              )}
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Security Status */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+                <Security />
+                Sicurezza
+              </Typography>
+              
+              {stats && (
+                <Box>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                    <Typography variant="body2">Login falliti (24h)</Typography>
+                    <Typography variant="body2" color="error.main">
+                      {stats.security.failed_logins_24h}
+                    </Typography>
+                  </Box>
+                  
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                    <Typography variant="body2">IP bloccati</Typography>
+                    <Typography variant="body2" color="warning.main">
+                      {stats.security.blocked_ips}
+                    </Typography>
+                  </Box>
+                  
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                    <Typography variant="body2">Attività sospette</Typography>
+                    <Typography variant="body2" color="error.main">
+                      {stats.security.suspicious_activity}
+                    </Typography>
+                  </Box>
+                  
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                    <Typography variant="body2">Dispositivi compromessi</Typography>
+                    <Typography variant="body2" color="error.main">
+                      {stats.devices.compromised}
+                    </Typography>
+                  </Box>
+                </Box>
+              )}
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+    </Box>
+  );
+};
+
+export default Dashboard;

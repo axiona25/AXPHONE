@@ -1,0 +1,17 @@
+{
+  "development": {
+    "api_base_url": "http://localhost:8001",
+    "websocket_url": "ws://localhost:8002",
+    "notify_url": "ws://localhost:8003"
+  },
+  "production": {
+    "api_base_url": "https://securevox.it",
+    "websocket_url": "wss://securevox.it:8002",
+    "notify_url": "wss://securevox.it:8003"
+  },
+  "tunnel": {
+    "api_base_url": "https://YOUR_TUNNEL_URL",
+    "websocket_url": "wss://YOUR_TUNNEL_URL:8002",
+    "notify_url": "wss://YOUR_TUNNEL_URL:8003"
+  }
+}

@@ -1,0 +1,24 @@
+name: Nightly Encrypted Backup
+on:
+  schedule: [{ cron: "0 2 * * *" }]
+  workflow_dispatch:
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Create archive
+        run: |
+          git bundle create repo.bundle --all
+          tar -czf securevox-$(date +%F).tar.gz repo.bundle
+      - name: Encrypt archive
+        run: |
+          openssl enc -aes-256-cbc -salt -in securevox-*.tar.gz -out securevox.enc -k "$BACKUP_PASSPHRASE"
+      - name: Upload to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.BACKUP_AWS_REGION }}
+        run: |
+          aws s3 cp securevox.enc s3://${{ secrets.BACKUP_S3_BUCKET }}/securevox/ --sse AES256

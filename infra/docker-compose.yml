@@ -1,0 +1,119 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: securevox
+      POSTGRES_PASSWORD: securevox
+      POSTGRES_DB: securevox
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U securevox"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: ../server
+    environment:
+      - DEBUG=1
+      - DJANGO_SECRET_KEY=dev-secret-key-change-in-production
+      - POSTGRES_DB=securevox
+      - POSTGRES_USER=securevox
+      - POSTGRES_PASSWORD=securevox
+      - POSTGRES_HOST=db
+      - REDIS_URL=redis://redis:6379/0
+      - TURN_HOST=turn
+      - JANUS_URL=http://sfu:8088
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    networks: [backend]
+    volumes:
+      - ../server:/app
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             gunicorn --bind 0.0.0.0:8080 --workers 4 --timeout 120 src.wsgi:application"
+
+  celery:
+    build: ../server
+    environment:
+      - DEBUG=1
+      - DJANGO_SECRET_KEY=dev-secret-key-change-in-production
+      - POSTGRES_DB=securevox
+      - POSTGRES_USER=securevox
+      - POSTGRES_PASSWORD=securevox
+      - POSTGRES_HOST=db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [backend]
+    volumes:
+      - ../server:/app
+    command: celery -A src worker --loglevel=info --concurrency=4
+
+  celery-beat:
+    build: ../server
+    environment:
+      - DEBUG=1
+      - DJANGO_SECRET_KEY=dev-secret-key-change-in-production
+      - POSTGRES_DB=securevox
+      - POSTGRES_USER=securevox
+      - POSTGRES_PASSWORD=securevox
+      - POSTGRES_HOST=db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [backend]
+    volumes:
+      - ../server:/app
+    command: celery -A src beat --loglevel=info
+
+  turn:
+    image: coturn/coturn:latest
+    command: ["-n", "--log-file=stdout", "--use-auth-secret", "--static-auth-secret=changeme", "--realm", "securevox"]
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+    networks: [realtime]
+
+  sfu:
+    build: ../signaling/janus
+    depends_on: [turn]
+    ports:
+      - "8088:8088"   # Janus HTTP transport
+    networks: [realtime]
+
+  admin:
+    build: ../admin
+    ports:
+      - "3000:3000"
+    networks: [backend]
+
+volumes:
+  dbdata:
+
+networks:
+  backend:
+  realtime:

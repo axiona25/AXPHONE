@@ -1,0 +1,224 @@
+version: '3.8'
+
+# SecureVox Oracle Cloud Deployment - Ottimizzato per 50 utenti
+# Oracle Always Free Tier: 2x ARM instances (2 OCPU, 12GB RAM each)
+
+services:
+  # Database PostgreSQL - Più efficiente di SQLite per 50 utenti
+  postgres:
+    image: postgres:15-alpine
+    container_name: securevox-postgres
+    environment:
+      POSTGRES_DB: securevox
+      POSTGRES_USER: securevox
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-securevox_2024!}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./server/create_tables.py:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U securevox"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis per sessioni e cache
+  redis:
+    image: redis:7-alpine
+    container_name: securevox-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.25'
+    command: redis-server --appendonly yes --maxmemory 400mb --maxmemory-policy allkeys-lru
+
+  # Django Backend - Ottimizzato per 50 utenti
+  django-backend:
+    build: 
+      context: ./server
+      dockerfile: Dockerfile.production
+    container_name: securevox-backend
+    environment:
+      - DJANGO_SETTINGS_MODULE=src.settings
+      - DATABASE_URL=postgresql://securevox:${POSTGRES_PASSWORD:-securevox_2024!}@postgres:5432/securevox
+      - REDIS_URL=redis://redis:6379/0
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - DJANGO_DEBUG=False
+      - DJANGO_ALLOWED_HOSTS=*
+      - MAX_USERS=50
+      - ENVIRONMENT=production_oracle
+      - GUNICORN_WORKERS=3
+      - GUNICORN_MAX_REQUESTS=1000
+      - GUNICORN_MAX_REQUESTS_JITTER=100
+    volumes:
+      - ./server/media:/app/media
+      - ./server/staticfiles:/app/staticfiles
+      - ./logs:/app/logs
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '1.0'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx - Reverse proxy e static files
+  nginx:
+    image: nginx:alpine
+    container_name: securevox-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.oracle.conf:/etc/nginx/nginx.conf
+      - ./server/staticfiles:/var/www/static
+      - ./server/media:/var/www/media
+      - ./ssl:/etc/nginx/ssl
+    depends_on:
+      - django-backend
+      - call-server
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+
+  # Call Server Node.js - Ottimizzato per chiamate simultanee limitate
+  call-server:
+    build:
+      context: ./call-server
+      dockerfile: Dockerfile.production
+    container_name: securevox-call-server
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - REDIS_URL=redis://redis:6379/1
+      - MAX_CONCURRENT_CALLS=10
+      - MAX_PARTICIPANTS_PER_CALL=4
+      - BACKEND_URL=http://django-backend:8000
+      - JANUS_URL=ws://janus:8188
+    ports:
+      - "3001:3001"
+    depends_on:
+      - redis
+      - django-backend
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '0.75'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Janus WebRTC Gateway - Configurazione minimal
+  janus:
+    build:
+      context: ./signaling/janus
+      dockerfile: Dockerfile
+    container_name: securevox-janus
+    ports:
+      - "8088:8088"
+      - "8188:8188"
+      - "20000-20010:20000-20010/udp"
+    environment:
+      - JANUS_CONFIG=minimal
+      - MAX_SESSIONS=50
+    volumes:
+      - ./signaling/janus/janus.oracle.jcfg:/opt/janus/etc/janus/janus.jcfg
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+
+  # Celery Worker per task asincroni
+  celery-worker:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.production
+    container_name: securevox-celery
+    command: celery -A src worker -l info -c 2 --max-tasks-per-child=100
+    environment:
+      - DJANGO_SETTINGS_MODULE=src.settings
+      - DATABASE_URL=postgresql://securevox:${POSTGRES_PASSWORD:-securevox_2024!}@postgres:5432/securevox
+      - REDIS_URL=redis://redis:6379/2
+      - CELERY_BROKER_URL=redis://redis:6379/2
+    volumes:
+      - ./server/media:/app/media
+      - ./logs:/app/logs
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+
+  # Monitoring e Health Check
+  monitoring:
+    image: prom/prometheus:latest
+    container_name: securevox-monitoring
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.oracle.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'  # Solo 7 giorni per risparmiare spazio
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.25'
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

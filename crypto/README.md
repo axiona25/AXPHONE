@@ -1,0 +1,4 @@
+- Handshake: **X3DH** (Curve25519, pre‑keys).
+- Ratchet: **Double Ratchet** (HKDF, AES‑GCM, HMAC‑SHA256).
+- Allegati: AES‑256‑GCM con chiave per‑file, IV random; chiave derivata dalla sessione.
+- Chiavi in **Secure Enclave/TEE** dove disponibile; altrimenti KeyStore/Keychain.
