@@ -38,6 +38,7 @@ import {
   Close,
   Image,
   VideoLibrary,
+  Videocam,
   InsertDriveFile,
   Contacts,
   LocationOn,
@@ -742,6 +743,50 @@ const UserChatsPage: React.FC<UserChatsPageProps> = ({ userId, onBack }) => {
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
                     Il contenuto è protetto con crittografia end-to-end e non è leggibile sul server.
                   </Typography>
+
+                  {/* 🔐 ICONA GRANDE PER TIPO DI ALLEGATO CIFRATO */}
+                  {(getMediaType(previewMessage) === 'image' || getMediaType(previewMessage) === 'video' || getMediaType(previewMessage) === 'file') && (
+                    <Box sx={{ 
+                      textAlign: 'center', 
+                      py: 4, 
+                      backgroundColor: 'white', 
+                      borderRadius: 2,
+                      mb: 2,
+                      border: '2px dashed #4caf50'
+                    }}>
+                      {/* Icona tipo allegato + lucchetto sovrapposto */}
+                      <Box sx={{ position: 'relative', display: 'inline-block' }}>
+                        {getMediaType(previewMessage) === 'image' && (
+                          <Image sx={{ fontSize: 120, color: '#9e9e9e', opacity: 0.5 }} />
+                        )}
+                        {getMediaType(previewMessage) === 'video' && (
+                          <Videocam sx={{ fontSize: 120, color: '#9e9e9e', opacity: 0.5 }} />
+                        )}
+                        {getMediaType(previewMessage) === 'file' && (
+                          <InsertDriveFile sx={{ fontSize: 120, color: '#9e9e9e', opacity: 0.5 }} />
+                        )}
+                        
+                        {/* Lucchetto verde sovrapposto al centro */}
+                        <Lock 
+                          sx={{ 
+                            position: 'absolute', 
+                            top: '50%', 
+                            left: '50%', 
+                            transform: 'translate(-50%, -50%)',
+                            fontSize: 60, 
+                            color: securevoxColors.success,
+                            filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.3))'
+                          }} 
+                        />
+                      </Box>
+                      <Typography variant="body2" color="text.secondary" sx={{ mt: 2, fontWeight: 600 }}>
+                        {getMediaType(previewMessage) === 'image' && '📷 Immagine Cifrata'}
+                        {getMediaType(previewMessage) === 'video' && '🎥 Video Cifrato'}
+                        {getMediaType(previewMessage) === 'file' && '📄 File Cifrato'}
+                      </Typography>
+                    </Box>
+                  )}
+
                   {previewMessage.encrypted_payload && (
                     <Box sx={{ p: 2, backgroundColor: 'white', borderRadius: 1, fontFamily: 'monospace' }}>
                       <Typography variant="caption" display="block" sx={{ mb: 1 }}>
