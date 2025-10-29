@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'encryption_service.dart';
 import 'e2e_api_service.dart';
@@ -199,6 +200,77 @@ class E2EManager {
     return messageData.containsKey('encrypted') && 
            messageData['encrypted'] == true &&
            messageData.containsKey('ciphertext');
+  }
+
+  /// 🆕 Cifra file binari (immagini, video, file) per un destinatario
+  static Future<Map<String, dynamic>?> encryptFileBytes(
+    String recipientUserId,
+    Uint8List fileBytes,
+  ) async {
+    if (!_isEnabled) {
+      print('🔐 E2EManager.encryptFileBytes - E2EE disabilitato, file non cifrato');
+      return null;
+    }
+    
+    // Ottieni chiave pubblica del destinatario
+    final recipientPubKey = await getUserPublicKey(recipientUserId);
+    
+    if (recipientPubKey == null) {
+      print('⚠️  E2EManager.encryptFileBytes - Chiave pubblica destinatario non trovata, file non cifrato');
+      return null;
+    }
+    
+    try {
+      print('🔐 E2EManager.encryptFileBytes - Cifratura file (${fileBytes.length} bytes) per utente $recipientUserId');
+      
+      final encrypted = await EncryptionService.encryptFileBytes(
+        recipientPubKey,
+        fileBytes,
+      );
+      
+      print('🔐 E2EManager.encryptFileBytes - ✅ File cifrato');
+      
+      return encrypted;
+    } catch (e) {
+      print('❌ E2EManager.encryptFileBytes - Errore: $e');
+      return null;
+    }
+  }
+
+  /// 🆕 Decifra file binari ricevuti
+  static Future<Uint8List?> decryptFileBytes(
+    String senderUserId,
+    Map<String, dynamic> encryptedData,
+  ) async {
+    if (!_isEnabled) {
+      return null;
+    }
+    
+    // Ottieni chiave pubblica del mittente
+    final senderPubKey = await getUserPublicKey(senderUserId);
+    
+    if (senderPubKey == null) {
+      print('⚠️  E2EManager.decryptFileBytes - Chiave pubblica mittente non trovata');
+      return null;
+    }
+    
+    try {
+      print('🔐 E2EManager.decryptFileBytes - Decifratura file da utente $senderUserId');
+      
+      final plaintextBytes = await EncryptionService.decryptFileBytes(
+        senderPubKey,
+        encryptedData['ciphertext'] as String,
+        encryptedData['iv'] as String,
+        encryptedData['mac'] as String,
+      );
+      
+      print('🔐 E2EManager.decryptFileBytes - ✅ File decifrato (${plaintextBytes.length} bytes)');
+      
+      return plaintextBytes;
+    } catch (e) {
+      print('❌ E2EManager.decryptFileBytes - Errore: $e');
+      return null;
+    }
   }
   
   /// 🔧 CORREZIONE: Pulisce la cache delle chiavi pubbliche degli altri utenti

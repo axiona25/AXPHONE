@@ -159,6 +159,76 @@ class EncryptionService {
       rethrow;
     }
   }
+
+  /// 🆕 Cifra file binari (immagini, video, file) per un destinatario specifico
+  static Future<Map<String, dynamic>> encryptFileBytes(
+    String recipientPublicKey,
+    Uint8List fileBytes,
+  ) async {
+    try {
+      print('🔐 EncryptionService.encryptFileBytes - Cifratura file (${fileBytes.length} bytes)');
+      
+      // Calcola chiave condivisa
+      final sharedKey = await _computeSharedSecret(recipientPublicKey);
+      
+      // Genera IV random (96 bit per GCM)
+      final iv = _generateRandomBytes(12);
+      
+      // Cifra usando AES-256-GCM simulato (XOR con hash)
+      final ciphertext = _xorEncrypt(fileBytes, sharedKey, iv);
+      
+      // Calcola MAC per autenticazione
+      final mac = _computeMAC(ciphertext, sharedKey, iv);
+      
+      print('🔐 EncryptionService.encryptFileBytes - ✅ File cifrato (${ciphertext.length} bytes)');
+      
+      return {
+        'ciphertext': base64.encode(ciphertext),
+        'iv': base64.encode(iv),
+        'mac': base64.encode(mac),
+        'original_size': fileBytes.length, // Salva dimensione originale
+      };
+    } catch (e) {
+      print('❌ EncryptionService.encryptFileBytes - Errore: $e');
+      rethrow;
+    }
+  }
+
+  /// 🆕 Decifra file binari ricevuti
+  static Future<Uint8List> decryptFileBytes(
+    String senderPublicKey,
+    String ciphertextBase64,
+    String ivBase64,
+    String macBase64,
+  ) async {
+    try {
+      print('🔐 EncryptionService.decryptFileBytes - Decifratura file');
+      
+      // Calcola chiave condivisa
+      final sharedKey = await _computeSharedSecret(senderPublicKey);
+      
+      // Decodifica dati
+      final ciphertext = base64.decode(ciphertextBase64);
+      final iv = base64.decode(ivBase64);
+      final receivedMac = base64.decode(macBase64);
+      
+      // Verifica MAC
+      final computedMac = _computeMAC(ciphertext, sharedKey, iv);
+      if (!_constantTimeEquals(receivedMac, computedMac)) {
+        throw Exception('MAC verification failed - file alterato o corrotto');
+      }
+      
+      // Decifra
+      final plaintextBytes = _xorEncrypt(ciphertext, sharedKey, iv);
+      
+      print('🔐 EncryptionService.decryptFileBytes - ✅ File decifrato (${plaintextBytes.length} bytes)');
+      
+      return plaintextBytes;
+    } catch (e) {
+      print('❌ EncryptionService.decryptFileBytes - Errore: $e');
+      rethrow;
+    }
+  }
   
   /// Genera chiave privata random
   static BigInt _generatePrivateKey() {

@@ -9,6 +9,7 @@ import '../services/user_service.dart';
 import '../services/timezone_service.dart';
 import '../services/media_service.dart';
 import '../services/message_service.dart';
+import '../services/e2e_manager.dart';
 
 /// Enum per i tipi di allegati supportati
 enum AttachmentType {
@@ -142,8 +143,10 @@ class UnifiedAttachmentService {
   Future<Map<String, dynamic>?> uploadAttachment(
     AttachmentData attachment,
     String userId,
-    String chatId,
-  ) async {
+    String chatId, {
+    String? recipientId, // 🆕 Per cifratura E2E
+    bool shouldEncrypt = false, // 🆕 Flag per abilitare cifratura
+  }) async {
     try {
       print('⬆️ UnifiedAttachmentService.uploadAttachment - Tipo: ${attachment.type}');
 
@@ -155,6 +158,8 @@ class UnifiedAttachmentService {
               chatId: chatId,
               image: attachment.file!,
               caption: attachment.caption ?? '',
+              recipientId: recipientId, // 🔐 E2E
+              shouldEncrypt: shouldEncrypt, // 🔐 E2E
             );
           }
           break;
@@ -166,6 +171,8 @@ class UnifiedAttachmentService {
               chatId: chatId,
               video: attachment.file!,
               caption: attachment.caption ?? '',
+              recipientId: recipientId, // 🔐 E2E
+              shouldEncrypt: shouldEncrypt, // 🔐 E2E
             );
           }
           break;
@@ -176,6 +183,8 @@ class UnifiedAttachmentService {
               userId: userId,
               chatId: chatId,
               file: attachment.file!,
+              recipientId: recipientId, // 🔐 E2E
+              shouldEncrypt: shouldEncrypt, // 🔐 E2E
             );
           }
           break;
@@ -261,7 +270,20 @@ class UnifiedAttachmentService {
       Map<String, dynamic>? uploadResult;
       if (attachment.file != null) {
         final userId = UserService.getCurrentUserIdSync() ?? '1';
-        uploadResult = await uploadAttachment(attachment, userId, chatId);
+        
+        // 🔐 Sincronizza stato E2E prima di decidere se cifrare
+        await E2EManager.syncForceDisabledStatus();
+        final shouldEncrypt = E2EManager.isEnabled;
+        
+        print('🔐 UnifiedAttachmentService.sendAttachment - E2E: $shouldEncrypt');
+        
+        uploadResult = await uploadAttachment(
+          attachment, 
+          userId, 
+          chatId,
+          recipientId: recipientId, // 🔐 E2E
+          shouldEncrypt: shouldEncrypt, // 🔐 E2E
+        );
         
         if (uploadResult == null) {
           throw Exception('Upload fallito');

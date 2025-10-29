@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
@@ -10,11 +11,62 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:image/image.dart' as img;
 import 'package:http_parser/http_parser.dart';
+import 'package:path/path.dart' as path;
+import 'e2e_manager.dart';
 
 /// Servizio per gestire tutti i contenuti multimediali
 class MediaService {
   static const String baseUrl = 'http://127.0.0.1:8001/api/media';
   final ImagePicker _imagePicker = ImagePicker();
+
+  /// 🔐 Helper per cifrare un file prima dell'upload
+  Future<Map<String, dynamic>?> _encryptFileIfNeeded({
+    required File file,
+    required String? recipientId,
+    required bool shouldEncrypt,
+  }) async {
+    if (!shouldEncrypt || recipientId == null || !E2EManager.isEnabled) {
+      return null;
+    }
+
+    try {
+      print('🔐 MediaService._encryptFileIfNeeded - Cifratura file per destinatario $recipientId');
+      
+      // Leggi il file come bytes
+      final fileBytes = await file.readAsBytes();
+      print('🔐 File letto: ${fileBytes.length} bytes');
+      
+      // Cifra i bytes
+      final encrypted = await E2EManager.encryptFileBytes(recipientId, fileBytes);
+      
+      if (encrypted != null) {
+        // Salva i bytes cifrati in un file temporaneo
+        final tempDir = await getTemporaryDirectory();
+        final encryptedFileName = '${DateTime.now().millisecondsSinceEpoch}_encrypted.bin';
+        final encryptedFile = File('${tempDir.path}/$encryptedFileName');
+        
+        // Decodifica il ciphertext da base64 e scrivi nel file
+        final ciphertextBytes = base64.decode(encrypted['ciphertext'] as String);
+        await encryptedFile.writeAsBytes(ciphertextBytes);
+        
+        print('🔐 MediaService._encryptFileIfNeeded - ✅ File cifrato: ${encryptedFile.path}');
+        
+        return {
+          'file': encryptedFile,
+          'metadata': {
+            'iv': encrypted['iv'],
+            'mac': encrypted['mac'],
+            'encrypted': true,
+            'original_size': encrypted['original_size'],
+          },
+        };
+      }
+    } catch (e) {
+      print('❌ MediaService._encryptFileIfNeeded - Errore: $e');
+    }
+    
+    return null;
+  }
 
 
 
@@ -23,14 +75,37 @@ class MediaService {
     required String userId,
     required String chatId,
     required File file,
+    String? recipientId, // 🆕 Per cifratura E2E
+    bool shouldEncrypt = false, // 🆕 Flag per abilitare cifratura
   }) async {
     try {
+      File fileToUpload = file;
+      Map<String, dynamic>? encryptionMetadata;
+
+      // 🔐 CIFRATURA E2E
+      final encryptionResult = await _encryptFileIfNeeded(
+        file: file,
+        recipientId: recipientId,
+        shouldEncrypt: shouldEncrypt,
+      );
+      
+      if (encryptionResult != null) {
+        fileToUpload = encryptionResult['file'] as File;
+        encryptionMetadata = encryptionResult['metadata'] as Map<String, dynamic>;
+      }
+
       var request = http.MultipartRequest(
         'POST',
         Uri.parse('$baseUrl/upload/file/'),
       );
 
-      request.files.add(await http.MultipartFile.fromPath('file', file.path));
+      request.files.add(await http.MultipartFile.fromPath(
+        'file', 
+        fileToUpload.path,
+        contentType: encryptionMetadata != null 
+            ? MediaType('application', 'octet-stream')
+            : null,
+      ));
       request.fields['user_id'] = userId;
       request.fields['chat_id'] = chatId;
 
@@ -39,7 +114,19 @@ class MediaService {
       var jsonData = json.decode(responseData);
 
       if (response.statusCode == 200) {
-        return jsonData['data'];
+        final result = jsonData['data'] as Map<String, dynamic>;
+        
+        // 🔐 Aggiungi metadata cifratura
+        if (encryptionMetadata != null) {
+          result['encryption'] = encryptionMetadata;
+        }
+        
+        // 🧹 Rimuovi file temporaneo
+        if (encryptionMetadata != null && fileToUpload.existsSync()) {
+          await fileToUpload.delete();
+        }
+        
+        return result;
       } else {
         print('Errore upload file: ${jsonData['error']}');
         return null;
@@ -56,10 +143,27 @@ class MediaService {
     required String chatId,
     required File image,
     String caption = '',
+    String? recipientId, // 🆕 Per cifratura E2E
+    bool shouldEncrypt = false, // 🆕 Flag per abilitare cifratura
   }) async {
     try {
       // Ridimensiona l'immagine se necessario
       final optimizedImage = await _optimizeImage(image);
+      
+      File fileToUpload = optimizedImage;
+      Map<String, dynamic>? encryptionMetadata;
+
+      // 🔐 CIFRATURA E2E: Se abilitata, cifra il file prima di caricarlo
+      final encryptionResult = await _encryptFileIfNeeded(
+        file: optimizedImage,
+        recipientId: recipientId,
+        shouldEncrypt: shouldEncrypt,
+      );
+      
+      if (encryptionResult != null) {
+        fileToUpload = encryptionResult['file'] as File;
+        encryptionMetadata = encryptionResult['metadata'] as Map<String, dynamic>;
+      }
       
       var request = http.MultipartRequest(
         'POST',
@@ -67,12 +171,14 @@ class MediaService {
       );
 
       // Rileva il content type basato sull'estensione del file
-      final contentType = _getImageContentType(optimizedImage.path);
+      final contentType = shouldEncrypt && encryptionMetadata != null 
+          ? MediaType('application', 'octet-stream') // File cifrato = binario generico
+          : _getImageContentType(fileToUpload.path);
       
       // Aggiungi il file con content type appropriato
       var multipartFile = await http.MultipartFile.fromPath(
         'image', 
-        optimizedImage.path,
+        fileToUpload.path,
         contentType: contentType,
       );
       request.files.add(multipartFile);
@@ -85,7 +191,21 @@ class MediaService {
       var jsonData = json.decode(responseData);
 
       if (response.statusCode == 200) {
-        return jsonData['data'];
+        final result = jsonData['data'] as Map<String, dynamic>;
+        
+        // 🔐 Aggiungi metadata cifratura se presente
+        if (encryptionMetadata != null) {
+          result['encryption'] = encryptionMetadata;
+          print('🔐 MediaService.uploadImage - Metadata cifratura aggiunti al risultato');
+        }
+        
+        // 🧹 Rimuovi file temporaneo cifrato
+        if (shouldEncrypt && encryptionMetadata != null && fileToUpload.existsSync()) {
+          await fileToUpload.delete();
+          print('🧹 MediaService.uploadImage - File temporaneo cifrato eliminato');
+        }
+        
+        return result;
       } else {
         print('Errore upload immagine: ${jsonData['error']}');
         return null;
@@ -102,23 +222,41 @@ class MediaService {
     required String chatId,
     required File video,
     String caption = '',
+    String? recipientId, // 🆕 Per cifratura E2E
+    bool shouldEncrypt = false, // 🆕 Flag per abilitare cifratura
   }) async {
     try {
       // Ottimizza il video se necessario
       final optimizedVideo = await _optimizeVideo(video);
+      
+      File fileToUpload = optimizedVideo;
+      Map<String, dynamic>? encryptionMetadata;
+
+      // 🔐 CIFRATURA E2E
+      final encryptionResult = await _encryptFileIfNeeded(
+        file: optimizedVideo,
+        recipientId: recipientId,
+        shouldEncrypt: shouldEncrypt,
+      );
+      
+      if (encryptionResult != null) {
+        fileToUpload = encryptionResult['file'] as File;
+        encryptionMetadata = encryptionResult['metadata'] as Map<String, dynamic>;
+      }
       
       var request = http.MultipartRequest(
         'POST',
         Uri.parse('$baseUrl/upload/video/'),
       );
 
-      // Rileva il content type basato sull'estensione del file
-      final contentType = _getVideoContentType(optimizedVideo.path);
+      // Rileva il content type
+      final contentType = encryptionMetadata != null 
+          ? MediaType('application', 'octet-stream')
+          : _getVideoContentType(fileToUpload.path);
       
-      // Aggiungi il file con content type appropriato
       var multipartFile = await http.MultipartFile.fromPath(
         'video', 
-        optimizedVideo.path,
+        fileToUpload.path,
         contentType: contentType,
       );
       request.files.add(multipartFile);
@@ -131,7 +269,19 @@ class MediaService {
       var jsonData = json.decode(responseData);
 
       if (response.statusCode == 200) {
-        return jsonData['data'];
+        final result = jsonData['data'] as Map<String, dynamic>;
+        
+        // 🔐 Aggiungi metadata cifratura
+        if (encryptionMetadata != null) {
+          result['encryption'] = encryptionMetadata;
+        }
+        
+        // 🧹 Rimuovi file temporaneo
+        if (encryptionMetadata != null && fileToUpload.existsSync()) {
+          await fileToUpload.delete();
+        }
+        
+        return result;
       } else {
         print('Errore upload video: ${jsonData['error']}');
         return null;
