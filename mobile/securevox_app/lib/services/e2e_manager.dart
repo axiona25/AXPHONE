@@ -229,17 +229,45 @@ class E2EManager {
   static Future<void> syncForceDisabledStatus() async {
     try {
       print('🔐 E2EManager.syncForceDisabledStatus - Sincronizzazione stato force_disabled...');
+      print('🔐 Stato PRIMA della sync:');
+      print('   _isEnabled: $_isEnabled');
+      print('   _isForceDisabled: $_isForceDisabled');
+      print('   isEnabled (computed): ${isEnabled}');
       
       final status = await E2EApiService.getUserE2EStatus();
       if (status != null) {
+        print('📥 Risposta backend ricevuta:');
+        print('   e2e_enabled: ${status['e2e_enabled']}');
+        print('   e2e_force_disabled: ${status['e2e_force_disabled']}');
+        print('   has_public_key: ${status['has_public_key']}');
+        
+        // ⚡ FIX: Sincronizza ENTRAMBI i flag dal backend
+        final e2eEnabled = status['e2e_enabled'] as bool? ?? false;
         final forceDisabled = status['e2e_force_disabled'] as bool? ?? false;
+        final hasPublicKey = status['has_public_key'] as bool? ?? false;
+        
+        // Se il backend dice che E2E è abilitato E l'utente ha chiavi, abilita _isEnabled
+        if (e2eEnabled && hasPublicKey) {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setBool(_e2eEnabledKey, true);
+          _isEnabled = true;
+          print('🔐 Sincronizzato _isEnabled = true dal backend');
+        }
+        
         await setForceDisabled(forceDisabled);
+        
+        print('🔐 Stato DOPO la sync:');
+        print('   _isEnabled: $_isEnabled');
+        print('   _isForceDisabled: $_isForceDisabled');
+        print('   isEnabled (computed): ${isEnabled}');
         
         if (forceDisabled) {
           print('⛔ E2EManager.syncForceDisabledStatus - Cifratura disabilitata dall\'admin');
         } else {
           print('✅ E2EManager.syncForceDisabledStatus - Cifratura abilitata');
         }
+      } else {
+        print('❌ Status è null, backend non ha risposto correttamente');
       }
     } catch (e) {
       print('❌ E2EManager.syncForceDisabledStatus - Errore: $e');

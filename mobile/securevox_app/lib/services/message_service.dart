@@ -220,10 +220,17 @@ class MessageService extends ChangeNotifier {
         return false;
       }
 
+      // 🔐 VERIFICA E2EE: Sincronizza stato force_disabled prima di cifrare
+      await E2EManager.syncForceDisabledStatus();
+      
       // 🔐 VERIFICA E2EE: Cifra il messaggio se E2EE è abilitato
       String contentToSend = text;
       Map<String, dynamic>? encryptionMetadata;
       bool isEncrypted = false;
+      
+      print('🔐 MessageService.sendTextMessage - Verifica stato E2EE:');
+      print('   E2EManager.isEnabled = ${E2EManager.isEnabled}');
+      print('   E2EManager.isForceDisabled = ${E2EManager.isForceDisabled}');
       
       if (E2EManager.isEnabled) {
         print('🔐 MessageService.sendTextMessage - E2EE ABILITATO, cifratura del messaggio...');
@@ -1432,6 +1439,36 @@ class MessageService extends ChangeNotifier {
         return false;
       }
 
+      // 🔐 VERIFICA E2EE: Sincronizza stato force_disabled prima di inviare
+      await E2EManager.syncForceDisabledStatus();
+      print('🔐 MessageService.sendImageMessage - E2EManager.isEnabled = ${E2EManager.isEnabled}');
+
+      // 🔐 Cifra il caption se E2EE è abilitato
+      String contentToSend = caption ?? '📷 Immagine';
+      Map<String, dynamic>? encryptionMetadata;
+      
+      if (E2EManager.isEnabled) {
+        print('🔐 MessageService.sendImageMessage - Cifratura caption...');
+        try {
+          final encryptedData = await E2EManager.encryptMessage(
+            recipientId.toString(),
+            contentToSend,
+          );
+          
+          if (encryptedData != null) {
+            contentToSend = encryptedData['ciphertext'] ?? contentToSend;
+            encryptionMetadata = {
+              'iv': encryptedData['iv'],
+              'mac': encryptedData['mac'],
+              'encrypted': true,
+            };
+            print('✅ MessageService.sendImageMessage - Caption cifrato');
+          }
+        } catch (e) {
+          print('❌ MessageService.sendImageMessage - Errore cifratura: $e');
+        }
+      }
+
       // Invia il messaggio al backend
       final response = await http.post(
         Uri.parse('$baseUrl/chats/$chatId/send/'),
@@ -1440,10 +1477,11 @@ class MessageService extends ChangeNotifier {
           'Authorization': 'Token $token',
         },
         body: jsonEncode({
-          'content': caption ?? '📷 Immagine',
+          'content': contentToSend,
           'message_type': 'image',
           'image_url': imageUrl,
           'caption': caption,
+          if (encryptionMetadata != null) 'metadata': encryptionMetadata,
         }),
       );
 
@@ -1556,6 +1594,36 @@ class MessageService extends ChangeNotifier {
         return false;
       }
 
+      // 🔐 VERIFICA E2EE: Sincronizza stato force_disabled prima di inviare
+      await E2EManager.syncForceDisabledStatus();
+      print('🔐 MessageService.sendVideoMessage - E2EManager.isEnabled = ${E2EManager.isEnabled}');
+
+      // 🔐 Cifra il caption se E2EE è abilitato
+      String contentToSend = caption ?? '🎥 Video';
+      Map<String, dynamic>? encryptionMetadata;
+      
+      if (E2EManager.isEnabled) {
+        print('🔐 MessageService.sendVideoMessage - Cifratura caption...');
+        try {
+          final encryptedData = await E2EManager.encryptMessage(
+            recipientId.toString(),
+            contentToSend,
+          );
+          
+          if (encryptedData != null) {
+            contentToSend = encryptedData['ciphertext'] ?? contentToSend;
+            encryptionMetadata = {
+              'iv': encryptedData['iv'],
+              'mac': encryptedData['mac'],
+              'encrypted': true,
+            };
+            print('✅ MessageService.sendVideoMessage - Caption cifrato');
+          }
+        } catch (e) {
+          print('❌ MessageService.sendVideoMessage - Errore cifratura: $e');
+        }
+      }
+
       // CORREZIONE: Invia il messaggio al backend come per il testo
       final response = await http.post(
         Uri.parse('$baseUrl/chats/$chatId/send/'),
@@ -1564,11 +1632,12 @@ class MessageService extends ChangeNotifier {
           'Authorization': 'Token $token',
         },
         body: jsonEncode({
-          'content': caption ?? '🎥 Video',
+          'content': contentToSend,
           'message_type': 'video',
           'video_url': videoUrl,
           'thumbnail_url': thumbnailUrl,
           'caption': caption,
+          if (encryptionMetadata != null) 'metadata': encryptionMetadata,
         }),
       );
 
@@ -1674,6 +1743,36 @@ class MessageService extends ChangeNotifier {
         return false;
       }
 
+      // 🔐 VERIFICA E2EE: Sincronizza stato force_disabled prima di inviare
+      await E2EManager.syncForceDisabledStatus();
+      print('🔐 MessageService.sendFileMessage - E2EManager.isEnabled = ${E2EManager.isEnabled}');
+
+      // 🔐 Cifra il caption/fileName se E2EE è abilitato
+      String contentToSend = caption ?? fileName;
+      Map<String, dynamic>? encryptionMetadata;
+      
+      if (E2EManager.isEnabled) {
+        print('🔐 MessageService.sendFileMessage - Cifratura caption...');
+        try {
+          final encryptedData = await E2EManager.encryptMessage(
+            recipientId.toString(),
+            contentToSend,
+          );
+          
+          if (encryptedData != null) {
+            contentToSend = encryptedData['ciphertext'] ?? contentToSend;
+            encryptionMetadata = {
+              'iv': encryptedData['iv'],
+              'mac': encryptedData['mac'],
+              'encrypted': true,
+            };
+            print('✅ MessageService.sendFileMessage - Caption cifrato');
+          }
+        } catch (e) {
+          print('❌ MessageService.sendFileMessage - Errore cifratura: $e');
+        }
+      }
+
       // CORREZIONE: Invia il messaggio al backend come per il testo
       final response = await http.post(
         Uri.parse('$baseUrl/chats/$chatId/send/'),
@@ -1682,12 +1781,14 @@ class MessageService extends ChangeNotifier {
           'Authorization': 'Token $token',
         },
         body: jsonEncode({
-          'content': caption ?? '📎 $fileName',
+          'content': contentToSend,
           'message_type': 'file',
           'file_url': fileUrl,
           'file_name': fileName,
           'caption': caption,
-          'metadata': metadata,
+          'metadata': encryptionMetadata != null 
+            ? {...?metadata, ...encryptionMetadata} 
+            : metadata,
         }),
       );
 
@@ -1780,6 +1881,10 @@ class MessageService extends ChangeNotifier {
     try {
       print('📱 MessageService.sendDocumentMessage - Invio messaggio con documento');
       
+      // 🔐 VERIFICA E2EE: Sincronizza stato force_disabled prima di inviare
+      await E2EManager.syncForceDisabledStatus();
+      print('🔐 MessageService.sendDocumentMessage - E2EManager.isEnabled = ${E2EManager.isEnabled}');
+      
       final now = DateTime.now();
       final message = MessageModel(
         id: now.millisecondsSinceEpoch.toString(),
@@ -1835,6 +1940,36 @@ class MessageService extends ChangeNotifier {
         return false;
       }
 
+      // 🔐 VERIFICA E2EE: Sincronizza stato force_disabled prima di inviare
+      await E2EManager.syncForceDisabledStatus();
+      print('🔐 MessageService.sendContactMessage - E2EManager.isEnabled = ${E2EManager.isEnabled}');
+
+      // 🔐 Cifra il contenuto se E2EE è abilitato
+      String contentToSend = '👤 $contactName';
+      Map<String, dynamic>? encryptionMetadata;
+      
+      if (E2EManager.isEnabled) {
+        print('🔐 MessageService.sendContactMessage - Cifratura contatto...');
+        try {
+          final encryptedData = await E2EManager.encryptMessage(
+            recipientId.toString(),
+            contentToSend,
+          );
+          
+          if (encryptedData != null) {
+            contentToSend = encryptedData['ciphertext'] ?? contentToSend;
+            encryptionMetadata = {
+              'iv': encryptedData['iv'],
+              'mac': encryptedData['mac'],
+              'encrypted': true,
+            };
+            print('✅ MessageService.sendContactMessage - Contatto cifrato');
+          }
+        } catch (e) {
+          print('❌ MessageService.sendContactMessage - Errore cifratura: $e');
+        }
+      }
+
       final response = await http.post(
         Uri.parse('$baseUrl/chats/$chatId/send/'),
         headers: {
@@ -1842,11 +1977,12 @@ class MessageService extends ChangeNotifier {
           'Authorization': 'Token $token',
         },
         body: jsonEncode({
-          'content': '👤 $contactName',
+          'content': contentToSend,
           'message_type': 'contact',
           'contact_name': contactName,
           'contact_phone': contactPhone,
           'contact_email': contactEmail ?? '',
+          if (encryptionMetadata != null) 'metadata': encryptionMetadata,
         }),
       );
 
@@ -1925,6 +2061,36 @@ class MessageService extends ChangeNotifier {
         return false;
       }
 
+      // 🔐 VERIFICA E2EE: Sincronizza stato force_disabled prima di inviare
+      await E2EManager.syncForceDisabledStatus();
+      print('🔐 MessageService.sendLocationMessage - E2EManager.isEnabled = ${E2EManager.isEnabled}');
+
+      // 🔐 Cifra il contenuto se E2EE è abilitato
+      String contentToSend = address ?? '📍 Posizione';
+      Map<String, dynamic>? encryptionMetadata;
+      
+      if (E2EManager.isEnabled) {
+        print('🔐 MessageService.sendLocationMessage - Cifratura posizione...');
+        try {
+          final encryptedData = await E2EManager.encryptMessage(
+            recipientId.toString(),
+            contentToSend,
+          );
+          
+          if (encryptedData != null) {
+            contentToSend = encryptedData['ciphertext'] ?? contentToSend;
+            encryptionMetadata = {
+              'iv': encryptedData['iv'],
+              'mac': encryptedData['mac'],
+              'encrypted': true,
+            };
+            print('✅ MessageService.sendLocationMessage - Posizione cifrata');
+          }
+        } catch (e) {
+          print('❌ MessageService.sendLocationMessage - Errore cifratura: $e');
+        }
+      }
+
       final response = await http.post(
         Uri.parse('$baseUrl/chats/$chatId/send/'),
         headers: {
@@ -1932,13 +2098,14 @@ class MessageService extends ChangeNotifier {
           'Authorization': 'Token $token',
         },
         body: jsonEncode({
-          'content': '📍 Posizione',
+          'content': contentToSend,
           'message_type': 'location',
           'latitude': latitude,
           'longitude': longitude,
           'address': address ?? '',
           'city': city ?? '',
           'country': country ?? '',
+          if (encryptionMetadata != null) 'metadata': encryptionMetadata,
         }),
       );
 
@@ -2070,6 +2237,10 @@ class MessageService extends ChangeNotifier {
   }) async {
     try {
       print('📱 MessageService.sendVoiceMessage - Invio messaggio audio');
+      
+      // 🔐 VERIFICA E2EE: Sincronizza stato force_disabled prima di inviare
+      await E2EManager.syncForceDisabledStatus();
+      print('🔐 MessageService.sendVoiceMessage - E2EManager.isEnabled = ${E2EManager.isEnabled}');
       
       final now = DateTime.now();
       final message = MessageModel(
