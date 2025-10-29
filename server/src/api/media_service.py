@@ -58,22 +58,33 @@ def upload_file(request):
         if not user_id or not chat_id:
             return JsonResponse({'error': 'user_id e chat_id richiesti'}, status=400)
         
+        # 🔐 MODIFICA E2E: Rileva se il file è cifrato
+        is_encrypted = file.content_type == 'application/octet-stream' or file.name.endswith('_encrypted.bin')
+        
+        if is_encrypted:
+            logger.info("🔐 File cifrato rilevato (application/octet-stream)")
+        
         # Verifica dimensione file
         if file.size > MAX_FILE_SIZE:
             return JsonResponse({'error': 'File troppo grande (max 50MB)'}, status=400)
         
-        # Verifica tipo file
-        file_extension = os.path.splitext(file.name)[1][1:].lower()
-        if file_extension not in SUPPORTED_FILE_TYPES:
-            return JsonResponse({'error': f'Tipo file non supportato: {file_extension}'}, status=400)
+        # 🔐 MODIFICA E2E: Salta verifica tipo file se cifrato
+        if not is_encrypted:
+            # Verifica tipo file solo per file non cifrati
+            file_extension = os.path.splitext(file.name)[1][1:].lower()
+            if file_extension not in SUPPORTED_FILE_TYPES:
+                return JsonResponse({'error': f'Tipo file non supportato: {file_extension}'}, status=400)
+        else:
+            file_extension = 'bin'  # Estensione fittizia per file cifrati
         
         # Genera nome file univoco
         unique_filename = f"{uuid.uuid4()}_{file.name}"
         file_path = default_storage.save(f"uploads/{unique_filename}", ContentFile(file.read()))
         
         # NUOVO: Conversione Office → PDF per preview
+        # 🔐 MODIFICA E2E: Salta conversione per file cifrati
         preview_pdf_path = None
-        if file_extension in ['docx', 'xlsx', 'pptx']:
+        if not is_encrypted and file_extension in ['docx', 'xlsx', 'pptx']:
             try:
                 logger.info(f"🔄 Conversione Office → PDF per preview: {file.name}")
                 
@@ -187,9 +198,14 @@ def upload_image(request):
             logger.error(f"❌ Parametri mancanti - user_id: {user_id}, chat_id: {chat_id}")
             return JsonResponse({'error': 'user_id e chat_id richiesti'}, status=400)
         
-        # Verifica tipo immagine
-        if not image.content_type.startswith('image/'):
+        # 🔐 MODIFICA E2E: Accetta anche file cifrati (application/octet-stream)
+        is_encrypted = image.content_type == 'application/octet-stream'
+        
+        if not is_encrypted and not image.content_type.startswith('image/'):
             return JsonResponse({'error': 'File non è un\'immagine'}, status=400)
+        
+        if is_encrypted:
+            logger.info("🔐 File cifrato rilevato (application/octet-stream)")
         
         # Genera nome file univoco
         unique_filename = f"{uuid.uuid4()}_{image.name}"
@@ -255,9 +271,14 @@ def upload_video(request):
         if not user_id or not chat_id:
             return JsonResponse({'error': 'user_id e chat_id richiesti'}, status=400)
         
-        # Verifica tipo video
-        if not video.content_type.startswith('video/'):
+        # 🔐 MODIFICA E2E: Accetta anche file cifrati (application/octet-stream)
+        is_encrypted = video.content_type == 'application/octet-stream'
+        
+        if not is_encrypted and not video.content_type.startswith('video/'):
             return JsonResponse({'error': 'File non è un video'}, status=400)
+        
+        if is_encrypted:
+            logger.info("🔐 Video cifrato rilevato (application/octet-stream)")
         
         # Genera nome file univoco
         unique_filename = f"{uuid.uuid4()}_{video.name}"
