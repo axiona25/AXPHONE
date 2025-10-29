@@ -6,9 +6,11 @@ import 'e2e_api_service.dart';
 /// Gestisce l'abilitazione/disabilitazione e lo scambio chiavi
 class E2EManager {
   static const String _e2eEnabledKey = 'e2e_enabled';
+  static const String _e2eForceDisabledKey = 'e2e_force_disabled';
   static const String _publicKeysPrefix = 'user_pubkey_';
   
   static bool _isEnabled = false;
+  static bool _isForceDisabled = false; // Flag admin: se true, la cifratura è disabilitata dall'admin
   static bool _isInitialized = false;
   
   /// Inizializza il sistema E2EE
@@ -19,10 +21,13 @@ class E2EManager {
     
     final prefs = await SharedPreferences.getInstance();
     _isEnabled = prefs.getBool(_e2eEnabledKey) ?? false;
+    _isForceDisabled = prefs.getBool(_e2eForceDisabledKey) ?? false;
     
-    if (_isEnabled) {
+    if (_isEnabled && !_isForceDisabled) {
       await EncryptionService.initializeKeys();
       print('🔐 E2EManager.initialize - ✅ Sistema E2EE attivo');
+    } else if (_isForceDisabled) {
+      print('🔐 E2EManager.initialize - ⛔ Sistema E2EE disabilitato dall\'admin');
     } else {
       print('🔐 E2EManager.initialize - ⚠️  Sistema E2EE disabilitato');
     }
@@ -76,7 +81,8 @@ class E2EManager {
   }
   
   /// Verifica se E2EE è abilitato
-  static bool get isEnabled => _isEnabled;
+  /// Controlla sia il flag utente che il flag admin (force_disabled)
+  static bool get isEnabled => _isEnabled && !_isForceDisabled;
   
   /// Salva la chiave pubblica di un utente
   static Future<void> saveUserPublicKey(String userId, String publicKey) async {
@@ -217,5 +223,39 @@ class E2EManager {
       print('❌ E2EManager.clearPublicKeysCache - Errore: $e');
     }
   }
+  
+  /// Scarica lo stato E2E force_disabled dal backend
+  /// Chiamato durante il login per sincronizzare lo stato admin
+  static Future<void> syncForceDisabledStatus() async {
+    try {
+      print('🔐 E2EManager.syncForceDisabledStatus - Sincronizzazione stato force_disabled...');
+      
+      final status = await E2EApiService.getUserE2EStatus();
+      if (status != null) {
+        final forceDisabled = status['e2e_force_disabled'] as bool? ?? false;
+        await setForceDisabled(forceDisabled);
+        
+        if (forceDisabled) {
+          print('⛔ E2EManager.syncForceDisabledStatus - Cifratura disabilitata dall\'admin');
+        } else {
+          print('✅ E2EManager.syncForceDisabledStatus - Cifratura abilitata');
+        }
+      }
+    } catch (e) {
+      print('❌ E2EManager.syncForceDisabledStatus - Errore: $e');
+    }
+  }
+  
+  /// Imposta il flag force_disabled (usato dall'admin)
+  static Future<void> setForceDisabled(bool forceDisabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_e2eForceDisabledKey, forceDisabled);
+    _isForceDisabled = forceDisabled;
+    
+    print('🔐 E2EManager.setForceDisabled - Flag impostato a: $forceDisabled');
+  }
+  
+  /// Getter per verificare se è forzatamente disabilitato dall'admin
+  static bool get isForceDisabled => _isForceDisabled;
 }
 

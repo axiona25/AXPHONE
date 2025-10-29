@@ -200,3 +200,45 @@ def get_multiple_keys(request):
             'error': f'Errore durante il recupero: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+@api_view(['GET'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def get_my_e2e_status(request):
+    """
+    Recupera lo stato E2EE dell'utente corrente (incluso force_disabled)
+    
+    GET /api/e2e/my-status/
+    Returns: {
+        "e2e_enabled": bool,
+        "e2e_force_disabled": bool,
+        "has_public_key": bool
+    }
+    """
+    try:
+        user = request.user
+        
+        # Ottieni o crea UserStatus
+        user_status, created = UserStatus.objects.get_or_create(
+            user=user,
+            defaults={
+                'status': 'offline',
+                'e2e_enabled': False,
+                'e2e_force_disabled': False,
+            }
+        )
+        
+        return Response({
+            'user_id': user.id,
+            'username': user.username,
+            'e2e_enabled': user_status.e2e_enabled,
+            'e2e_force_disabled': user_status.e2e_force_disabled,
+            'has_public_key': bool(user_status.e2e_public_key),
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        print(f'❌ E2EE: Errore recupero stato E2EE: {e}')
+        return Response({
+            'error': f'Errore durante il recupero: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+

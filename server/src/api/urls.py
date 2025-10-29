@@ -26,7 +26,7 @@ from .securevox_call_integration import (
     create_webrtc_call, end_webrtc_call
 )
 from .e2e_views import (
-    upload_public_key, get_user_public_key, get_my_public_key, get_multiple_keys
+    upload_public_key, get_user_public_key, get_my_public_key, get_multiple_keys, get_my_e2e_status
 )
 from .chat_monitoring_views import (
     chat_statistics, users_list, user_chats, chat_messages, reset_user_password,
@@ -76,6 +76,7 @@ urlpatterns = [
     path("e2e/get-key/<int:user_id>/", get_user_public_key, name="get_user_public_key"),
     path("e2e/my-key/", get_my_public_key, name="get_my_public_key"),
     path("e2e/get-keys/", get_multiple_keys, name="get_multiple_keys"),
+    path("e2e/my-status/", get_my_e2e_status, name="get_my_e2e_status"),
     
     # Messaging
     path("messages/send/", send_message, name="send_message"),

@@ -675,10 +675,9 @@ def toggle_user_e2e(request, user_id):
             user_status.e2e_enabled = not force_disabled
             user_status.save()
         
-        # Se disabilitiamo E2EE, rimuovi anche la chiave pubblica
-        if force_disabled:
-            user_status.e2e_public_key = None
-            user_status.save()
+        # NOTA: Manteniamo la chiave pubblica salvata anche quando disabilitiamo E2EE
+        # In questo modo l'utente può riabilitare la cifratura istantaneamente
+        # L'app mobile controlla e2e_force_disabled per decidere se cifrare o meno
         
         return Response({
             'message': f'E2EE {"disabilitato" if force_disabled else "abilitato"} per {user.username}',

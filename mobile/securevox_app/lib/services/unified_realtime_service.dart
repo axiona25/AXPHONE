@@ -441,18 +441,18 @@ class UnifiedRealtimeService extends ChangeNotifier {
               print('✅ ✅ ✅ DECIFRATURA RIUSCITA!');
               print('   Plaintext: ${decryptedText.substring(0, decryptedText.length > 50 ? 50 : decryptedText.length)}...');
             } else {
-              messageContent = '🔒 [Messaggio cifrato]';
+              messageContent = '...';  // ⚡ FIX: Non mostrare "Messaggio cifrato" per evitare flash
               print('❌ ❌ ❌ DECIFRATURA FALLITA: E2EManager ha restituito null');
             }
           } catch (e, stackTrace) {
             print('❌ ❌ ❌ ERRORE DURANTE DECIFRATURA:');
             print('   Errore: $e');
             print('   StackTrace: $stackTrace');
-            messageContent = '🔒 [Errore decifratura]';
+            messageContent = '...';  // ⚡ FIX: Non mostrare errore per evitare flash
           }
         } else {
           print('❌ IV NON DISPONIBILE - impossibile decifrare');
-          messageContent = '🔒 [Messaggio cifrato - IV mancante]';
+          messageContent = '...';  // ⚡ FIX: Non mostrare "IV mancante" per evitare flash
         }
       } else {
         if (!isEncrypted) {
@@ -486,6 +486,10 @@ class UnifiedRealtimeService extends ChangeNotifier {
         return;
       }
       
+      // ⚡ FIX: Aggiorna la lista chat PRIMA di addMessageToCache per evitare flash di "Messaggio cifrato"
+      // updateChatLastMessage ora chiama automaticamente notifyListeners()
+      _updateChatList(chatId, messageContent);
+      
       _messageService!.addMessageToCache(chatId, incomingMessage, isRealtimeMessage: true);
       
       // CORREZIONE: Se la chat è attualmente visualizzata, aggiorna lo stato di lettura
@@ -493,10 +497,6 @@ class UnifiedRealtimeService extends ChangeNotifier {
         _messageService!.updateChatReadStatus(chatId);
         print('📨 UnifiedRealtimeService - Stato lettura aggiornato per chat visualizzata: $chatId');
       }
-      
-      // CORREZIONE: Aggiorna la lista chat con il contenuto DECIFRATO
-      // updateChatLastMessage ora chiama automaticamente notifyListeners()
-      _updateChatList(chatId, messageContent);
       
       // ✅ Aggiungi l'ID del messaggio alla cache per evitare duplicati SOLO DOPO il successo
       _processedMessageIds.add(messageId);

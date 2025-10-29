@@ -12,6 +12,7 @@ import 'unified_avatar_service.dart';
 import 'realtime_status_service.dart';
 import 'user_status_service.dart';
 import 'notification_service.dart';
+import 'custom_push_notification_service.dart';
 import 'e2e_manager.dart';
 
 class AuthService extends ChangeNotifier {
@@ -1394,6 +1395,21 @@ class AuthService extends ChangeNotifier {
         
         print('✅ E2EE ABILITATO CON SUCCESSO!');
         print('✅ Chiave pubblica inviata al server');
+      }
+      
+      // 🔐 NUOVO: Sincronizza lo stato force_disabled dall'admin
+      print('🔐 Step 4: Sincronizzazione stato force_disabled dall\'admin...');
+      await E2EManager.syncForceDisabledStatus();
+      print('✅ Step 4: Stato force_disabled sincronizzato');
+      
+      // 🔔 NUOVO: Inizializza il servizio notifiche personalizzato
+      print('🔔 Step 5: Inizializzazione servizio notifiche...');
+      try {
+        final notificationService = CustomPushNotificationService();
+        await notificationService.initialize();
+        print('✅ Step 5: Servizio notifiche inizializzato');
+      } catch (e) {
+        print('⚠️  Step 5: Errore inizializzazione notifiche: $e');
       }
       
       print('=' * 70);

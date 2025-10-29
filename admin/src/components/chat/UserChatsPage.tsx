@@ -315,8 +315,8 @@ const UserChatsPage: React.FC<UserChatsPageProps> = ({ userId, onBack }) => {
               </Box>
             ) : (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
-                <LockOpen sx={{ fontSize: 16, color: '#f57c00', opacity: 0.6 }} />
-                <Typography variant="caption" sx={{ color: '#f57c00', fontWeight: 600, opacity: 0.6 }}>
+                <LockOpen sx={{ fontSize: 16, color: '#9e9e9e' }} />
+                <Typography variant="caption" sx={{ color: '#9e9e9e', fontWeight: 600 }}>
                   ⚠️ Chat Non Cifrata
                 </Typography>
               </Box>
@@ -339,8 +339,8 @@ const UserChatsPage: React.FC<UserChatsPageProps> = ({ userId, onBack }) => {
       <Box sx={{ display: 'flex', gap: 3, height: 'calc(100vh - 220px)' }}>
         {/* Chats List */}
         <Paper sx={{ width: '350px', borderRadius: 3, overflow: 'hidden' }}>
-          <Box sx={{ p: 2, backgroundColor: securevoxColors.primary, color: 'white' }}>
-            <Typography variant="h6" sx={{ fontWeight: 600 }}>
+          <Box sx={{ p: 2, backgroundColor: securevoxColors.primary }}>
+            <Typography variant="h6" sx={{ fontWeight: 600, color: '#FFFFFF' }}>
               Chat ({chats.length})
             </Typography>
           </Box>
@@ -357,62 +357,49 @@ const UserChatsPage: React.FC<UserChatsPageProps> = ({ userId, onBack }) => {
                   }}
                 >
                   <ListItemAvatar>
-                    <Badge
-                      badgeContent={chat.total_messages}
-                      color="primary"
-                      max={999}
-                      overlap="circular"
+                    <Avatar 
+                      src={chat.is_group ? undefined : getFullAvatarUrl(chat.participants.find(p => p.id !== userId)?.avatar_url)}
+                      sx={{ bgcolor: chat.is_group ? securevoxColors.secondary : securevoxColors.primary }}
                     >
-                      <Badge
-                        overlap="circular"
-                        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-                        variant="dot"
-                        sx={{
-                          '& .MuiBadge-badge': {
-                            backgroundColor: chat.participants.some(p => p.is_online) ? '#44b700' : '#9e9e9e',
-                            color: chat.participants.some(p => p.is_online) ? '#44b700' : '#9e9e9e',
-                            boxShadow: '0 0 0 2px #fff',
-                            width: 10,
-                            height: 10,
-                            borderRadius: '50%',
-                          },
-                        }}
-                      >
-                        <Avatar sx={{ bgcolor: chat.is_group ? securevoxColors.secondary : securevoxColors.primary }}>
-                          {chat.is_group ? <Group /> : <Person />}
-                        </Avatar>
-                      </Badge>
-                    </Badge>
+                      {chat.is_group ? (
+                        <Group />
+                      ) : (() => {
+                        const participant = chat.participants.find(p => p.id !== userId);
+                        if (!participant) return <Person />;
+                        const nameParts = participant.full_name.trim().split(' ');
+                        if (nameParts.length >= 2) {
+                          return `${nameParts[0].charAt(0)}${nameParts[nameParts.length - 1].charAt(0)}`.toUpperCase();
+                        }
+                        return participant.full_name.substring(0, 2).toUpperCase();
+                      })()}
+                    </Avatar>
                   </ListItemAvatar>
                   <ListItemText
                     primary={
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
                         <Typography variant="body2" sx={{ fontWeight: 600 }}>
                           {chat.name}
                         </Typography>
-                        {chat.last_message?.is_encrypted && (
-                          <Tooltip title="Chat Cifrata E2EE">
-                            <Lock sx={{ fontSize: 14, color: securevoxColors.success }} />
-                          </Tooltip>
-                        )}
+                        {/* Pallino stato online/offline a destra del nome */}
+                        <Box
+                          sx={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: '50%',
+                            backgroundColor: chat.participants.some(p => p.is_online) ? '#44b700' : '#9e9e9e',
+                            boxShadow: '0 0 0 2px #fff',
+                          }}
+                        />
                       </Box>
                     }
                     secondary={
-                      <Box component="span">
-                        <Typography variant="caption" color="text.secondary" component="span">
+                      <Box component="div">
+                        <Typography variant="caption" color="text.secondary" display="block">
                           {chat.participants.length} partecipanti
-                          {chat.participants.some(p => p.is_online) && (
-                            <span style={{ color: '#44b700', fontWeight: 600 }}>
-                              {' '}• {chat.participants.filter(p => p.is_online).length} 🟢 online
-                            </span>
-                          )}
-                          {' '}• {chat.total_messages} messaggi
                         </Typography>
-                        {chat.last_message && (
-                          <Typography variant="caption" display="block" sx={{ mt: 0.5 }} component="span">
-                            {chat.last_message.is_encrypted ? '🔐 [ENCRYPTED]' : chat.last_message.content.substring(0, 30) + '...'}
-                          </Typography>
-                        )}
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          {chat.total_messages} messaggi
+                        </Typography>
                       </Box>
                     }
                     secondaryTypographyProps={{ component: 'div' }}
@@ -429,19 +416,13 @@ const UserChatsPage: React.FC<UserChatsPageProps> = ({ userId, onBack }) => {
             <>
               {/* Chat Header */}
               <Box sx={{ p: 2, backgroundColor: '#f5f5f5', borderBottom: '1px solid #e0e0e0' }}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <Box>
                     <Typography variant="h6" sx={{ fontWeight: 600 }}>
                       {selectedChat.name}
                     </Typography>
                     <Typography variant="caption" color="text.secondary" component="div">
-                      {selectedChat.participants.length} partecipanti
-                      {selectedChat.participants.some(p => p.is_online) && (
-                        <span style={{ color: '#44b700', fontWeight: 600 }}>
-                          {' '}• {selectedChat.participants.filter(p => p.is_online).length} 🟢 online
-                        </span>
-                      )}
-                      {' '}• {selectedChat.total_messages} messaggi totali
+                      {selectedChat.participants.length} partecipanti • {selectedChat.total_messages} messaggi totali
                     </Typography>
                   </Box>
                   <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
@@ -479,43 +460,6 @@ const UserChatsPage: React.FC<UserChatsPageProps> = ({ userId, onBack }) => {
                       />
                     )}
                   </Box>
-                </Box>
-                
-                {/* Participants Online/Offline */}
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1 }}>
-                  {selectedChat.participants.map((participant) => (
-                    <Tooltip 
-                      key={participant.id} 
-                      title={
-                        participant.is_online 
-                          ? `${participant.full_name} - 🟢 Online` 
-                          : `${participant.full_name} - ⚫ Offline${participant.last_seen ? ` - Ultimo accesso: ${new Date(participant.last_seen).toLocaleString('it-IT')}` : ''}`
-                      }
-                    >
-                      <Badge
-                        overlap="circular"
-                        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-                        variant="dot"
-                        sx={{
-                          '& .MuiBadge-badge': {
-                            backgroundColor: participant.is_online ? '#44b700' : '#9e9e9e',
-                            boxShadow: '0 0 0 2px #fff',
-                          },
-                        }}
-                      >
-                        <Avatar
-                          src={participant.avatar_url || undefined}
-                          sx={{ 
-                            width: 32, 
-                            height: 32,
-                            border: participant.is_online ? '2px solid #44b700' : '2px solid #e0e0e0',
-                          }}
-                        >
-                          {participant.full_name.charAt(0)}
-                        </Avatar>
-                      </Badge>
-                    </Tooltip>
-                  ))}
                 </Box>
               </Box>
 

@@ -574,25 +574,62 @@ const ChatPage: React.FC<{ onViewUserChats: (userId: number) => void }> = ({ onV
                       )}
                     </Box>
                   </TableCell>
-                  <TableCell onClick={() => onViewUserChats(user.id)}>
-                    {user.e2e_force_disabled ? (
-                      <Tooltip title="⛔ E2EE Disabilitato dall'Admin">
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                          <LockOpenOutlined sx={{ color: securevoxColors.error, fontSize: 20 }} />
-                          <Typography variant="caption" sx={{ color: securevoxColors.error, fontSize: '0.65rem' }}>
-                            Admin
-                          </Typography>
-                        </Box>
-                      </Tooltip>
-                    ) : user.e2e_enabled && user.e2e_has_key ? (
-                      <Tooltip title="🔐 Cifratura E2EE Attiva">
-                        <Lock sx={{ color: securevoxColors.success, fontSize: 20 }} />
-                      </Tooltip>
-                    ) : (
-                      <Tooltip title="⚠️ E2EE Non Configurato (nessuna chiave pubblica)">
-                        <LockOpenOutlined sx={{ color: '#f57c00', fontSize: 20 }} />
-                      </Tooltip>
-                    )}
+                  <TableCell>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
+                      {/* Priorità: prima controlla se ha le chiavi configurate */}
+                      {user.e2e_has_key ? (
+                        user.e2e_force_disabled ? (
+                          // Ha le chiavi MA è disabilitato dall'admin → Grigio CLICCABILE per riabilitare
+                          <Tooltip title="🔓 Cifratura DISABILITATA - Click per ABILITARE">
+                            <IconButton
+                              size="small"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                try {
+                                  const apiService = new ApiService();
+                                  await apiService.toggleUserE2E(user.id, false); // Abilita E2EE
+                                  setSuccessMessage(`🔐 Cifratura E2EE abilitata per ${user.full_name}. I nuovi messaggi saranno cifrati.`);
+                                  await loadData(); // Ricarica i dati
+                                  setTimeout(() => setSuccessMessage(''), 10000);
+                                } catch (err: any) {
+                                  setError(err.message || 'Errore nel toggle E2EE');
+                                }
+                              }}
+                            >
+                              <LockOpen sx={{ color: '#9e9e9e', fontSize: 20 }} />
+                            </IconButton>
+                          </Tooltip>
+                        ) : (
+                          // Ha le chiavi E non è disabilitato → Verde CLICCABILE per disabilitare
+                          <Tooltip title="🔒 Cifratura ATTIVA - Click per DISABILITARE">
+                            <IconButton
+                              size="small"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                try {
+                                  const apiService = new ApiService();
+                                  await apiService.toggleUserE2E(user.id, true); // Disabilita E2EE
+                                  setSuccessMessage(`🔓 Cifratura E2EE disabilitata per ${user.full_name}. I nuovi messaggi saranno in chiaro.`);
+                                  await loadData(); // Ricarica i dati
+                                  setTimeout(() => setSuccessMessage(''), 10000);
+                                } catch (err: any) {
+                                  setError(err.message || 'Errore nel toggle E2EE');
+                                }
+                              }}
+                            >
+                              <Lock sx={{ color: securevoxColors.success, fontSize: 20 }} />
+                            </IconButton>
+                          </Tooltip>
+                        )
+                      ) : (
+                        // NON ha mai configurato le chiavi → Celeste NON cliccabile
+                        <Tooltip title="⚠️ Cifratura mai configurata (nessuna chiave pubblica)">
+                          <IconButton size="small" disabled>
+                            <LockOpen sx={{ color: '#00bcd4', fontSize: 20 }} />
+                          </IconButton>
+                        </Tooltip>
+                      )}
+                    </Box>
                   </TableCell>
                   <TableCell>
                     <IconButton

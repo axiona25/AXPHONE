@@ -172,5 +172,40 @@ class E2EApiService {
       return {};
     }
   }
+  
+  /// Recupera lo stato E2E dell'utente corrente (incluso force_disabled)
+  static Future<Map<String, dynamic>?> getUserE2EStatus() async {
+    try {
+      print('🔐 E2EApiService.getUserE2EStatus - Recupero stato E2E utente');
+      
+      final token = await _getAuthToken();
+      if (token == null) {
+        print('❌ E2EApiService.getUserE2EStatus - Token non disponibile');
+        return null;
+      }
+      
+      final response = await http.get(
+        Uri.parse('$baseUrl/e2e/my-status/'),
+        headers: {
+          'Authorization': 'Token $token',
+        },
+      );
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        print('✅ E2EApiService.getUserE2EStatus - Stato recuperato');
+        print('   e2e_enabled: ${data['e2e_enabled']}');
+        print('   e2e_force_disabled: ${data['e2e_force_disabled']}');
+        print('   has_public_key: ${data['has_public_key']}');
+        return data;
+      } else {
+        print('❌ E2EApiService.getUserE2EStatus - Errore: ${response.statusCode}');
+        return null;
+      }
+    } catch (e) {
+      print('❌ E2EApiService.getUserE2EStatus - Errore: $e');
+      return null;
+    }
+  }
 }
 

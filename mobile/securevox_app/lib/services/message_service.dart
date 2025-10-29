@@ -1125,8 +1125,8 @@ class MessageService extends ChangeNotifier {
                 print('   Original length: ${content.length}');
                 print('   Decrypted: ${displayContent.substring(0, displayContent.length > 50 ? 50 : displayContent.length)}...');
               } else {
-                print('⚠️ MessageService._parseMessageFromBackend - Decifratura fallita, mostro messaggio cifrato (isMe: $isMe)');
-                displayContent = '🔒 [Messaggio cifrato]';
+                print('⚠️ MessageService._parseMessageFromBackend - Decifratura fallita, mostro placeholder (isMe: $isMe)');
+                displayContent = '...';  // ⚡ FIX: Placeholder che viene ignorato
               }
             }
           } catch (e) {

@@ -171,16 +171,16 @@ class RealChatService extends ChangeNotifier {
                     lastMessage = decryptedText;
                     print('🔐 RealChatService - ✅ lastMessage decifrato per chat ${json['name']}');
                   } else {
-                    lastMessage = '🔒 [Messaggio cifrato]';
+                    lastMessage = '...';  // ⚡ FIX: Placeholder che viene ignorato da updateChatLastMessage
                     print('❌ RealChatService - Impossibile decifrare lastMessage per chat ${json['name']}');
                   }
                 } else {
-                  lastMessage = '🔒 [Messaggio cifrato]';
+                  lastMessage = '...';  // ⚡ FIX: Placeholder che viene ignorato da updateChatLastMessage
                   print('❌ RealChatService - UserId per decifratura non disponibile');
                 }
               } catch (e) {
                 print('❌ RealChatService - Errore decifratura lastMessage: $e');
-                lastMessage = '🔒 [Errore decifratura]';
+                lastMessage = '...';  // ⚡ FIX: Placeholder che viene ignorato da updateChatLastMessage
               }
             }
           }
@@ -413,6 +413,12 @@ class RealChatService extends ChangeNotifier {
 
   /// Aggiorna l'ultimo messaggio e il contatore per una chat
   static void updateChatLastMessage(String chatId, String lastMessage, int unreadCount) {
+    // ⚡ FIX: Se il messaggio non è decifrato (placeholder), mantieni il precedente
+    if (lastMessage == '...' || lastMessage.contains('[Messaggio cifrato]') || lastMessage.contains('[Errore decifratura]')) {
+      print('⚠️ RealChatService.updateChatLastMessage - Messaggio non decifrato, mantengo precedente per chat $chatId');
+      return; // Non aggiornare, mantieni il messaggio precedente
+    }
+    
     final index = _cachedChats.indexWhere((chat) => chat.id == chatId);
     if (index != -1) {
       final currentChat = _cachedChats[index];
