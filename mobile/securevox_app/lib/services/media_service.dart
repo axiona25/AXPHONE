@@ -865,4 +865,105 @@ class MediaService {
       print('❌ MediaService.cancelRecording - Errore cancellazione registrazione: $e');
     }
   }
+
+  /// 🔐 Scarica file da URL (cifrato o in chiaro)
+  Future<Uint8List?> downloadFileBytes(String url) async {
+    try {
+      print('⬇️ MediaService.downloadFileBytes - Download da: $url');
+      
+      final response = await http.get(Uri.parse(url));
+      
+      if (response.statusCode == 200) {
+        print('✅ MediaService.downloadFileBytes - Download completato: ${response.bodyBytes.length} bytes');
+        return response.bodyBytes;
+      } else {
+        print('❌ MediaService.downloadFileBytes - Errore HTTP: ${response.statusCode}');
+        return null;
+      }
+    } catch (e) {
+      print('❌ MediaService.downloadFileBytes - Errore: $e');
+      return null;
+    }
+  }
+
+  /// 🔐 Scarica E decifra file cifrato
+  Future<Uint8List?> downloadAndDecryptFile({
+    required String url,
+    required String senderId,
+    required Map<String, dynamic> encryptionMetadata,
+  }) async {
+    try {
+      print('🔐 MediaService.downloadAndDecryptFile - Download file cifrato...');
+      
+      // 1. Scarica bytes cifrati
+      final encryptedBytes = await downloadFileBytes(url);
+      if (encryptedBytes == null) {
+        throw Exception('Download fallito');
+      }
+      
+      print('🔐 MediaService.downloadAndDecryptFile - File scaricato: ${encryptedBytes.length} bytes');
+      
+      // 2. Prepara dati per decifratura
+      final encryptedData = {
+        'ciphertext': base64.encode(encryptedBytes),
+        'iv': encryptionMetadata['iv'] as String,
+        'mac': encryptionMetadata['mac'] as String,
+      };
+      
+      // 3. Decifra
+      print('🔐 MediaService.downloadAndDecryptFile - Decifratura...');
+      final decryptedBytes = await E2EManager.decryptFileBytes(
+        senderId,
+        encryptedData,
+      );
+      
+      if (decryptedBytes == null) {
+        throw Exception('Decifratura fallita');
+      }
+      
+      print('✅ MediaService.downloadAndDecryptFile - File decifrato: ${decryptedBytes.length} bytes');
+      return decryptedBytes;
+      
+    } catch (e) {
+      print('❌ MediaService.downloadAndDecryptFile - Errore: $e');
+      return null;
+    }
+  }
+
+  /// 🔐 Helper: Verifica se un allegato è cifrato
+  static bool isAttachmentEncrypted(Map<String, dynamic>? metadata) {
+    if (metadata == null) return false;
+    
+    // Controlla se esiste il campo 'encryption' con i metadata E2E
+    if (metadata.containsKey('encryption')) {
+      final encryption = metadata['encryption'] as Map<String, dynamic>?;
+      return encryption?['encrypted'] == true;
+    }
+    
+    // Fallback: controlla direttamente nei metadata
+    return metadata['encrypted'] == true && 
+           metadata.containsKey('iv') && 
+           metadata.containsKey('mac');
+  }
+
+  /// 🔐 Helper: Estrai encryption metadata da metadata allegato
+  static Map<String, dynamic>? getEncryptionMetadata(Map<String, dynamic>? metadata) {
+    if (metadata == null) return null;
+    
+    // Caso 1: Metadata dentro campo 'encryption'
+    if (metadata.containsKey('encryption')) {
+      return metadata['encryption'] as Map<String, dynamic>?;
+    }
+    
+    // Caso 2: Metadata direttamente nel root
+    if (metadata['encrypted'] == true) {
+      return {
+        'iv': metadata['iv'],
+        'mac': metadata['mac'],
+        'encrypted': true,
+      };
+    }
+    
+    return null;
+  }
 }

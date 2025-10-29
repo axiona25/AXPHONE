@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:io';
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
@@ -2154,18 +2155,13 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> with WidgetsBinding
                       children: [
                         ClipRRect(
                           borderRadius: BorderRadius.circular(20),
-                          child: Image.network(
-                            imageUrl,
+                          child: EncryptedImageWidget(
+                            imageUrl: imageUrl,
+                            metadata: metadata,
+                            senderId: message.senderId,
                             width: double.infinity,
                             height: 200,
                             fit: BoxFit.cover,
-                            errorBuilder: (context, error, stackTrace) {
-                              return Container(
-                                height: 200,
-                                color: Colors.grey[300],
-                                child: const Icon(Icons.image, size: 50, color: Colors.grey),
-                              );
-                            },
                           ),
                         ),
                         if (caption != null && caption.isNotEmpty)
@@ -2198,18 +2194,13 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> with WidgetsBinding
                       children: [
                         ClipRRect(
                           borderRadius: BorderRadius.circular(20),
-                          child: Image.network(
-                            imageUrl,
+                          child: EncryptedImageWidget(
+                            imageUrl: imageUrl,
+                            metadata: metadata,
+                            senderId: message.senderId,
                             width: double.infinity,
                             height: 200,
                             fit: BoxFit.cover,
-                            errorBuilder: (context, error, stackTrace) {
-                              return Container(
-                                height: 200,
-                                color: Colors.grey[300],
-                                child: const Icon(Icons.image, size: 50, color: Colors.grey),
-                              );
-                            },
                           ),
                         ),
                         if (caption != null && caption.isNotEmpty)
@@ -6257,6 +6248,185 @@ class _ContactPickerDialogState extends State<_ContactPickerDialog> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 🔐 Widget per visualizzare immagini cifrate con decifratura automatica
+class EncryptedImageWidget extends StatefulWidget {
+  final String imageUrl;
+  final Map<String, dynamic>? metadata;
+  final String senderId;
+  final double width;
+  final double height;
+  final BoxFit fit;
+
+  const EncryptedImageWidget({
+    Key? key,
+    required this.imageUrl,
+    required this.metadata,
+    required this.senderId,
+    this.width = double.infinity,
+    this.height = 200,
+    this.fit = BoxFit.cover,
+  }) : super(key: key);
+
+  @override
+  _EncryptedImageWidgetState createState() => _EncryptedImageWidgetState();
+}
+
+class _EncryptedImageWidgetState extends State<EncryptedImageWidget> {
+  Uint8List? _decryptedBytes;
+  bool _isDecrypting = false;
+  bool _hasError = false;
+  final MediaService _mediaService = MediaService();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadImage();
+  }
+
+  Future<void> _loadImage() async {
+    // Controlla se l'immagine è cifrata
+    final isEncrypted = MediaService.isAttachmentEncrypted(widget.metadata);
+    
+    if (!isEncrypted) {
+      // Non cifrata, usa Image.network normale
+      return;
+    }
+
+    // Cifrata, scarica e decifra
+    setState(() {
+      _isDecrypting = true;
+      _hasError = false;
+    });
+
+    try {
+      print('🔐 EncryptedImageWidget - Immagine cifrata, inizio decifratura...');
+      
+      final encryptionMetadata = MediaService.getEncryptionMetadata(widget.metadata);
+      if (encryptionMetadata == null) {
+        throw Exception('Metadata cifratura mancanti');
+      }
+
+      // Scarica e decifra
+      final decryptedBytes = await _mediaService.downloadAndDecryptFile(
+        url: widget.imageUrl,
+        senderId: widget.senderId,
+        encryptionMetadata: encryptionMetadata,
+      );
+
+      if (decryptedBytes == null) {
+        throw Exception('Decifratura fallita');
+      }
+
+      setState(() {
+        _decryptedBytes = decryptedBytes;
+        _isDecrypting = false;
+      });
+
+      print('✅ EncryptedImageWidget - Immagine decifrata e visualizzata');
+    } catch (e) {
+      print('❌ EncryptedImageWidget - Errore: $e');
+      setState(() {
+        _isDecrypting = false;
+        _hasError = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEncrypted = MediaService.isAttachmentEncrypted(widget.metadata);
+
+    // Caso 1: Immagine NON cifrata → Image.network normale
+    if (!isEncrypted) {
+      return Image.network(
+        widget.imageUrl,
+        width: widget.width,
+        height: widget.height,
+        fit: widget.fit,
+        errorBuilder: (context, error, stackTrace) {
+          return Container(
+            height: widget.height,
+            color: Colors.grey[300],
+            child: const Icon(Icons.image, size: 50, color: Colors.grey),
+          );
+        },
+      );
+    }
+
+    // Caso 2: Immagine cifrata - Decifratura in corso
+    if (_isDecrypting) {
+      return Container(
+        height: widget.height,
+        color: Colors.grey[900],
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.lock, size: 50, color: Colors.green[400]),
+            const SizedBox(height: 12),
+            CircularProgressIndicator(color: Colors.green[400]),
+            const SizedBox(height: 8),
+            Text(
+              'Decifratura in corso...',
+              style: TextStyle(
+                color: Colors.grey[300],
+                fontFamily: 'Poppins',
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Caso 3: Errore decifratura
+    if (_hasError) {
+      return Container(
+        height: widget.height,
+        color: Colors.red[900],
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error, size: 50, color: Colors.red[300]),
+            const SizedBox(height: 8),
+            Text(
+              'Errore decifratura',
+              style: TextStyle(
+                color: Colors.red[100],
+                fontFamily: 'Poppins',
+                fontSize: 12,
+              ),
+            ),
+            TextButton(
+              onPressed: _loadImage,
+              child: Text(
+                'Riprova',
+                style: TextStyle(color: Colors.red[100]),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Caso 4: Immagine decifrata → Image.memory
+    if (_decryptedBytes != null) {
+      return Image.memory(
+        _decryptedBytes!,
+        width: widget.width,
+        height: widget.height,
+        fit: widget.fit,
+      );
+    }
+
+    // Fallback
+    return Container(
+      height: widget.height,
+      color: Colors.grey[300],
+      child: const Icon(Icons.image, size: 50, color: Colors.grey),
     );
   }
 }
