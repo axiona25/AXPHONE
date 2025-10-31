@@ -19,6 +19,60 @@ class MediaService {
   static const String baseUrl = 'http://127.0.0.1:8001/api/media';
   final ImagePicker _imagePicker = ImagePicker();
 
+  // 🗂️ Mappa locale videoUrl -> local_file_name per il mittente
+  static const String _videoLocalMapFile = 'video_local_cache.json';
+
+  Future<void> saveLocalVideoCacheMapping(String videoUrl, String localFileName) async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final file = File('${appDir.path}/$_videoLocalMapFile');
+      Map<String, dynamic> map = {};
+      if (await file.exists()) {
+        final content = await file.readAsString();
+        if (content.isNotEmpty) map = json.decode(content) as Map<String, dynamic>;
+      }
+      // 🔐 CRITICO: Aggiorna sempre il mapping anche se esiste già
+      // Questo assicura che quando si invia un nuovo video con lo stesso URL,
+      // il mapping punti al nuovo file locale (con nuovi IV/MAC)
+      map[videoUrl] = localFileName;
+      await file.writeAsString(json.encode(map));
+      print('💾 MediaService.saveLocalVideoCacheMapping - Salvato/Aggiornato mapping per $videoUrl → $localFileName');
+      print('   🔄 Mapping aggiornato per gestire nuovi video con stesso URL');
+    } catch (e) {
+      print('❌ MediaService.saveLocalVideoCacheMapping - Errore: $e');
+    }
+  }
+
+  Future<String?> getLocalVideoFileNameByUrl(String videoUrl) async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final file = File('${appDir.path}/$_videoLocalMapFile');
+      if (!await file.exists()) return null;
+      final content = await file.readAsString();
+      if (content.isEmpty) return null;
+      final map = json.decode(content) as Map<String, dynamic>;
+      return map[videoUrl]?.toString();
+    } catch (e) {
+      print('❌ MediaService.getLocalVideoFileNameByUrl - Errore: $e');
+      return null;
+    }
+  }
+
+  /// 🔐 CORREZIONE BUG: Invalida il mapping video quando cambia lo stato di crittografia
+  /// Questo previene che video vecchi vengano caricati usando il mapping errato
+  Future<void> clearVideoCacheMapping() async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final file = File('${appDir.path}/$_videoLocalMapFile');
+      if (await file.exists()) {
+        await file.writeAsString('{}');
+        print('🗑️ MediaService.clearVideoCacheMapping - Mapping video invalidato');
+      }
+    } catch (e) {
+      print('❌ MediaService.clearVideoCacheMapping - Errore: $e');
+    }
+  }
+
   /// 🔐 Helper per cifrare un file prima dell'upload
   Future<Map<String, dynamic>?> _encryptFileIfNeeded({
     required File file,
@@ -36,30 +90,87 @@ class MediaService {
       final fileBytes = await file.readAsBytes();
       print('🔐 File letto: ${fileBytes.length} bytes');
       
+      // 🆕 SALVA L'IMMAGINE ORIGINALE IN CACHE PER IL MITTENTE
+      print('🔐 DEBUG - INIZIO salvataggio immagine originale in cache locale');
+      final appDir = await getApplicationDocumentsDirectory();
+      print('🔐 DEBUG - App directory: ${appDir.path}');
+      
+      final cacheDir = Directory('${appDir.path}/image_cache');
+      if (!await cacheDir.exists()) {
+        await cacheDir.create(recursive: true);
+        print('🔐 DEBUG - Cache directory creata: ${cacheDir.path}');
+      } else {
+        print('🔐 DEBUG - Cache directory già esistente: ${cacheDir.path}');
+      }
+
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      
+      // 🔐 CORREZIONE: Estrai nome REALE e estensione del file originale
+      final realFileName = file.path.split('/').last; // Es: "PIanificazione Budget 2026_PA.xlsx"
+      final realFileExtension = realFileName.contains('.') 
+          ? realFileName.split('.').last.toLowerCase() 
+          : '';
+      
+      print('📄 MediaService._encryptFileIfNeeded - File originale:');
+      print('   📄 Nome: $realFileName');
+      print('   📄 Estensione: $realFileExtension');
+      
+      final originalFileName = '${timestamp}_original${file.path.substring(file.path.lastIndexOf('.'))}';
+      final cachedOriginalFile = File('${cacheDir.path}/$originalFileName');
+      await cachedOriginalFile.writeAsBytes(fileBytes);
+      
+      print('💾 MediaService - File originale salvato in cache');
+      print('   📁 Path: ${cachedOriginalFile.path}');
+      print('   📊 Dimensione: ${fileBytes.length} bytes');
+      print('   ✅ File esiste: ${await cachedOriginalFile.exists()}');
+      
       // Cifra i bytes
+      print('🔐 DEBUG - Inizio cifratura file...');
       final encrypted = await E2EManager.encryptFileBytes(recipientId, fileBytes);
       
       if (encrypted != null) {
+        print('🔐 DEBUG - File cifrato con successo!');
+        final ivStr = encrypted['iv']?.toString() ?? '';
+        final macStr = encrypted['mac']?.toString() ?? '';
+        print('   🔑 IV: ${ivStr.length > 20 ? ivStr.substring(0, 20) : ivStr}...');
+        print('   🔑 MAC: ${macStr.length > 20 ? macStr.substring(0, 20) : macStr}...');
+        print('   📊 Original size: ${encrypted['original_size']}');
+        
         // Salva i bytes cifrati in un file temporaneo
         final tempDir = await getTemporaryDirectory();
-        final encryptedFileName = '${DateTime.now().millisecondsSinceEpoch}_encrypted.bin';
+        final encryptedFileName = '${timestamp}_encrypted.bin';
         final encryptedFile = File('${tempDir.path}/$encryptedFileName');
         
         // Decodifica il ciphertext da base64 e scrivi nel file
         final ciphertextBytes = base64.decode(encrypted['ciphertext'] as String);
         await encryptedFile.writeAsBytes(ciphertextBytes);
         
-        print('🔐 MediaService._encryptFileIfNeeded - ✅ File cifrato: ${encryptedFile.path}');
+        print('🔐 MediaService._encryptFileIfNeeded - ✅ File cifrato temporaneo creato');
+        print('   📁 Path cifrato: ${encryptedFile.path}');
+        print('   📊 Dimensione cifrata: ${ciphertextBytes.length} bytes');
+        
+        final metadata = {
+          'iv': encrypted['iv'],
+          'mac': encrypted['mac'],
+          'encrypted': true,
+          'original_size': encrypted['original_size'],
+          'local_file_name': originalFileName, // 🆕 Per mittente: cache locale
+          'original_file_name': realFileName,  // 🔐 CORREZIONE: Nome REALE per destinatario
+          'original_file_extension': realFileExtension, // 🔐 CORREZIONE: Estensione REALE
+        };
+        
+        print('🔐 DEBUG - METADATA COMPLETI DA RITORNARE:');
+        print('   📦 ${metadata.toString()}');
+        print('   📦 local_file_name: $originalFileName');
+        print('   📦 original_file_name: $realFileName');
+        print('   📦 original_file_extension: $realFileExtension');
         
         return {
           'file': encryptedFile,
-          'metadata': {
-            'iv': encrypted['iv'],
-            'mac': encrypted['mac'],
-            'encrypted': true,
-            'original_size': encrypted['original_size'],
-          },
+          'metadata': metadata,
         };
+      } else {
+        print('❌ DEBUG - Cifratura fallita! encrypted è null');
       }
     } catch (e) {
       print('❌ MediaService._encryptFileIfNeeded - Errore: $e');
@@ -108,6 +219,33 @@ class MediaService {
       ));
       request.fields['user_id'] = userId;
       request.fields['chat_id'] = chatId;
+      
+      // 🔐 CORREZIONE: Passa il nome originale del file e metadati di cifratura per file cifrati
+      if (encryptionMetadata != null) {
+        if (encryptionMetadata['original_file_name'] != null) {
+          request.fields['original_file_name'] = encryptionMetadata['original_file_name'];
+        }
+        // 🔐 CRITICO: Passa iv, mac e altri metadati di cifratura durante l'upload
+        if (encryptionMetadata['iv'] != null) {
+          request.fields['iv'] = encryptionMetadata['iv'];
+        }
+        if (encryptionMetadata['mac'] != null) {
+          request.fields['mac'] = encryptionMetadata['mac'];
+        }
+        if (encryptionMetadata['encrypted'] != null) {
+          request.fields['encrypted'] = encryptionMetadata['encrypted'].toString();
+        }
+        if (encryptionMetadata['original_size'] != null) {
+          request.fields['original_size'] = encryptionMetadata['original_size'].toString();
+        }
+        if (encryptionMetadata['local_file_name'] != null) {
+          request.fields['local_file_name'] = encryptionMetadata['local_file_name'];
+        }
+        if (encryptionMetadata['original_file_extension'] != null) {
+          request.fields['original_file_extension'] = encryptionMetadata['original_file_extension'];
+        }
+        print('🔐 MediaService.uploadFile - Invio metadati cifratura: iv=${encryptionMetadata['iv'] != null}, mac=${encryptionMetadata['mac'] != null}');
+      }
 
       var response = await request.send();
       var responseData = await response.stream.bytesToString();
@@ -126,13 +264,21 @@ class MediaService {
           await fileToUpload.delete();
         }
         
+        print('✅ MediaService.uploadFile - Upload completato: ${result['fileId']}');
         return result;
       } else {
-        print('Errore upload file: ${jsonData['error']}');
+        // 🆕 CORREZIONE: Mostra dettagli errore dal server
+        final errorMsg = jsonData['error'] ?? 'Errore sconosciuto';
+        final errorDetails = jsonData['details'] ?? '';
+        print('❌ MediaService.uploadFile - Errore upload file:');
+        print('   Status Code: ${response.statusCode}');
+        print('   Messaggio: $errorMsg');
+        print('   Dettagli: $errorDetails');
         return null;
       }
-    } catch (e) {
-      print('Errore upload file: $e');
+    } catch (e, stackTrace) {
+      print('❌ MediaService.uploadFile - Exception: $e');
+      print('   Stack Trace: $stackTrace');
       return null;
     }
   }
@@ -185,6 +331,33 @@ class MediaService {
       request.fields['user_id'] = userId;
       request.fields['chat_id'] = chatId;
       request.fields['caption'] = caption;
+      
+      // 🔐 CORREZIONE: Passa il nome originale del file e metadati di cifratura per immagini cifrate
+      if (encryptionMetadata != null) {
+        if (encryptionMetadata['original_file_name'] != null) {
+          request.fields['original_file_name'] = encryptionMetadata['original_file_name'];
+        }
+        // 🔐 CRITICO: Passa iv, mac e altri metadati di cifratura durante l'upload
+        if (encryptionMetadata['iv'] != null) {
+          request.fields['iv'] = encryptionMetadata['iv'];
+        }
+        if (encryptionMetadata['mac'] != null) {
+          request.fields['mac'] = encryptionMetadata['mac'];
+        }
+        if (encryptionMetadata['encrypted'] != null) {
+          request.fields['encrypted'] = encryptionMetadata['encrypted'].toString();
+        }
+        if (encryptionMetadata['original_size'] != null) {
+          request.fields['original_size'] = encryptionMetadata['original_size'].toString();
+        }
+        if (encryptionMetadata['local_file_name'] != null) {
+          request.fields['local_file_name'] = encryptionMetadata['local_file_name'];
+        }
+        if (encryptionMetadata['original_file_extension'] != null) {
+          request.fields['original_file_extension'] = encryptionMetadata['original_file_extension'];
+        }
+        print('🔐 MediaService.uploadImage - Invio metadati cifratura: iv=${encryptionMetadata['iv'] != null}, mac=${encryptionMetadata['mac'] != null}');
+      }
 
       var response = await request.send();
       var responseData = await response.stream.bytesToString();
@@ -193,10 +366,15 @@ class MediaService {
       if (response.statusCode == 200) {
         final result = jsonData['data'] as Map<String, dynamic>;
         
-        // 🔐 Aggiungi metadata cifratura se presente
+        // 🔐 Aggiungi metadata cifratura se presente (client-side)
         if (encryptionMetadata != null) {
           result['encryption'] = encryptionMetadata;
           print('🔐 MediaService.uploadImage - Metadata cifratura aggiunti al risultato');
+        } else if (result['metadata'] != null && result['metadata']['encrypted'] == true) {
+          // 🔐 CORREZIONE: Estrai metadata E2E dal backend se non presenti lato client
+          final backendEncryption = Map<String, dynamic>.from(result['metadata']);
+          result['encryption'] = backendEncryption;
+          print('🔐 MediaService.uploadImage - Metadata E2E estratti dal backend');
         }
         
         // 🧹 Rimuovi file temporaneo cifrato
@@ -263,6 +441,33 @@ class MediaService {
       request.fields['user_id'] = userId;
       request.fields['chat_id'] = chatId;
       request.fields['caption'] = caption;
+      
+      // 🔐 CORREZIONE: Passa il nome originale del file e metadati di cifratura per video cifrati
+      if (encryptionMetadata != null) {
+        if (encryptionMetadata['original_file_name'] != null) {
+          request.fields['original_file_name'] = encryptionMetadata['original_file_name'];
+        }
+        // 🔐 CRITICO: Passa iv, mac e altri metadati di cifratura durante l'upload
+        if (encryptionMetadata['iv'] != null) {
+          request.fields['iv'] = encryptionMetadata['iv'];
+        }
+        if (encryptionMetadata['mac'] != null) {
+          request.fields['mac'] = encryptionMetadata['mac'];
+        }
+        if (encryptionMetadata['encrypted'] != null) {
+          request.fields['encrypted'] = encryptionMetadata['encrypted'].toString();
+        }
+        if (encryptionMetadata['original_size'] != null) {
+          request.fields['original_size'] = encryptionMetadata['original_size'].toString();
+        }
+        if (encryptionMetadata['local_file_name'] != null) {
+          request.fields['local_file_name'] = encryptionMetadata['local_file_name'];
+        }
+        if (encryptionMetadata['original_file_extension'] != null) {
+          request.fields['original_file_extension'] = encryptionMetadata['original_file_extension'];
+        }
+        print('🔐 MediaService.uploadVideo - Invio metadati cifratura: iv=${encryptionMetadata['iv'] != null}, mac=${encryptionMetadata['mac'] != null}');
+      }
 
       var response = await request.send();
       var responseData = await response.stream.bytesToString();
@@ -298,33 +503,94 @@ class MediaService {
     required String chatId,
     required File audio,
     String duration = '00:00',
+    String? recipientId, // 🆕 Per cifratura E2E
+    bool shouldEncrypt = false, // 🆕 Flag per abilitare cifratura
   }) async {
     try {
       // Ottimizza l'audio se necessario
       final optimizedAudio = await _optimizeAudio(audio);
+      
+      File fileToUpload = optimizedAudio;
+      Map<String, dynamic>? encryptionMetadata;
+
+      // 🔐 CIFRATURA E2E
+      final encryptionResult = await _encryptFileIfNeeded(
+        file: optimizedAudio,
+        recipientId: recipientId,
+        shouldEncrypt: shouldEncrypt,
+      );
+      
+      if (encryptionResult != null) {
+        fileToUpload = encryptionResult['file'] as File;
+        encryptionMetadata = encryptionResult['metadata'] as Map<String, dynamic>;
+      }
       
       var request = http.MultipartRequest(
         'POST',
         Uri.parse('$baseUrl/upload/audio/'),
       );
 
-      // Aggiungi il file con content type esplicito
+      // Aggiungi il file con content type appropriato
+      final contentType = encryptionMetadata != null 
+          ? MediaType('application', 'octet-stream') // File cifrato = binario generico
+          : MediaType('audio', 'mpeg');
+      
       var multipartFile = await http.MultipartFile.fromPath(
         'audio', 
-        optimizedAudio.path,
-        contentType: MediaType('audio', 'mpeg'),
+        fileToUpload.path,
+        contentType: contentType,
       );
       request.files.add(multipartFile);
       request.fields['user_id'] = userId;
       request.fields['chat_id'] = chatId;
       request.fields['duration'] = duration;
+      
+      // 🔐 CORREZIONE: Passa il nome originale del file e metadati di cifratura per audio cifrati
+      if (encryptionMetadata != null) {
+        if (encryptionMetadata['original_file_name'] != null) {
+          request.fields['original_file_name'] = encryptionMetadata['original_file_name'];
+        }
+        // 🔐 CRITICO: Passa iv, mac e altri metadati di cifratura durante l'upload
+        if (encryptionMetadata['iv'] != null) {
+          request.fields['iv'] = encryptionMetadata['iv'];
+        }
+        if (encryptionMetadata['mac'] != null) {
+          request.fields['mac'] = encryptionMetadata['mac'];
+        }
+        if (encryptionMetadata['encrypted'] != null) {
+          request.fields['encrypted'] = encryptionMetadata['encrypted'].toString();
+        }
+        if (encryptionMetadata['original_size'] != null) {
+          request.fields['original_size'] = encryptionMetadata['original_size'].toString();
+        }
+        if (encryptionMetadata['local_file_name'] != null) {
+          request.fields['local_file_name'] = encryptionMetadata['local_file_name'];
+        }
+        if (encryptionMetadata['original_file_extension'] != null) {
+          request.fields['original_file_extension'] = encryptionMetadata['original_file_extension'];
+        }
+        print('🔐 MediaService.uploadAudio - Invio metadati cifratura: iv=${encryptionMetadata['iv'] != null}, mac=${encryptionMetadata['mac'] != null}');
+      }
 
       var response = await request.send();
       var responseData = await response.stream.bytesToString();
       var jsonData = json.decode(responseData);
 
       if (response.statusCode == 200) {
-        return jsonData['data'];
+        final result = jsonData['data'] as Map<String, dynamic>;
+        
+        // 🔐 Aggiungi metadata cifratura se presente
+        if (encryptionMetadata != null) {
+          result['encryption'] = encryptionMetadata;
+        }
+        
+        // 🧹 Rimuovi file temporaneo cifrato
+        if (shouldEncrypt && encryptionMetadata != null && fileToUpload.existsSync()) {
+          await fileToUpload.delete();
+          print('🧹 MediaService.uploadAudio - File temporaneo cifrato eliminato');
+        }
+        
+        return result;
       } else {
         print('Errore upload audio: ${jsonData['error']}');
         return null;
@@ -516,21 +782,50 @@ class MediaService {
         type: FileType.custom,
         allowedExtensions: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt'],
         allowMultiple: false,
+        withData: true,  // 🆕 IMPORTANTE per iOS: carica i bytes
       );
 
       print('📄 MediaService.pickDocument - Risultato: ${result != null ? 'File selezionato' : 'Nessun file'}');
 
-      if (result != null && result.files.single.path != null) {
-        final file = File(result.files.single.path!);
-        print('✅ MediaService.pickDocument - File path: ${file.path}');
-        print('✅ MediaService.pickDocument - File name: ${file.path.split('/').last}');
-        return file;
+      if (result != null) {
+        final platformFile = result.files.single;
+        
+        // 🆕 CORREZIONE iOS: Controlla prima path, poi usa bytes
+        if (platformFile.path != null) {
+          // Android o file locale iOS: usa path diretto
+          final file = File(platformFile.path!);
+          print('✅ MediaService.pickDocument - File path: ${file.path}');
+          print('✅ MediaService.pickDocument - File name: ${file.path.split('/').last}');
+          return file;
+        } else if (platformFile.bytes != null) {
+          // 🆕 iOS iCloud/protetto: crea file temporaneo dai bytes
+          print('📱 MediaService.pickDocument - iOS: path null, usando bytes...');
+          print('📱 MediaService.pickDocument - Bytes length: ${platformFile.bytes!.length}');
+          print('📱 MediaService.pickDocument - File name: ${platformFile.name}');
+          
+          // Crea file temporaneo nella directory temporanea dell'app
+          final tempDir = await getTemporaryDirectory();
+          final fileName = platformFile.name;
+          final tempFile = File('${tempDir.path}/$fileName');
+          
+          // Scrivi i bytes nel file temporaneo
+          await tempFile.writeAsBytes(platformFile.bytes!);
+          
+          print('✅ MediaService.pickDocument - File temporaneo creato: ${tempFile.path}');
+          print('✅ MediaService.pickDocument - File size: ${await tempFile.length()} bytes');
+          
+          return tempFile;
+        } else {
+          print('❌ MediaService.pickDocument - Né path né bytes disponibili');
+          return null;
+        }
       }
       
       print('⚠️ MediaService.pickDocument - Nessun file selezionato');
       return null;
     } catch (e) {
       print('❌ MediaService.pickDocument - Errore: $e');
+      print('❌ MediaService.pickDocument - Stack trace: ${StackTrace.current}');
       return null;
     }
   }
@@ -871,19 +1166,63 @@ class MediaService {
     try {
       print('⬇️ MediaService.downloadFileBytes - Download da: $url');
       
-      final response = await http.get(Uri.parse(url));
+      final request = http.Request('GET', Uri.parse(url));
+      // 🔐 IMPORTANTE: NON aggiungere header Range per evitare Partial Content
+      // Il server potrebbe servire 206 se rileva Range header, quindi evitiamolo
+      request.headers['Accept'] = '*/*';
+      request.headers['Connection'] = 'close'; // Evita connection pooling che potrebbe causare problemi
       
-      if (response.statusCode == 200) {
-        print('✅ MediaService.downloadFileBytes - Download completato: ${response.bodyBytes.length} bytes');
-        return response.bodyBytes;
+      final streamedResponse = await request.send();
+      
+      if (streamedResponse.statusCode == 200) {
+        final bytes = await streamedResponse.stream.toList();
+        final totalBytes = bytes.fold<int>(0, (sum, chunk) => sum + chunk.length);
+        final result = Uint8List(totalBytes);
+        int offset = 0;
+        for (final chunk in bytes) {
+          result.setRange(offset, offset + chunk.length, chunk);
+          offset += chunk.length;
+        }
+        
+        print('✅ MediaService.downloadFileBytes - Download completato: ${result.length} bytes');
+        print('   📦 Content-Type: ${streamedResponse.headers['content-type']}');
+        print('   📦 Content-Length: ${streamedResponse.headers['content-length']}');
+        print('   📦 Accept-Ranges: ${streamedResponse.headers['accept-ranges']}');
+        
+        return result;
+      } else if (streamedResponse.statusCode == 206) {
+        // 🔐 Gestisci Partial Content (Range Request)
+        print('⚠️ MediaService.downloadFileBytes - Ricevuto 206 Partial Content');
+        print('   📦 Content-Range: ${streamedResponse.headers['content-range']}');
+        
+        // Per video, potrebbe essere necessario scaricare tutto il file senza range
+        // Rifai la richiesta senza Range header
+        final fullRequest = http.Request('GET', Uri.parse(url));
+        final fullResponse = await fullRequest.send();
+        
+        if (fullResponse.statusCode == 200) {
+          final bytes = await fullResponse.stream.toList();
+          final totalBytes = bytes.fold<int>(0, (sum, chunk) => sum + chunk.length);
+          final result = Uint8List(totalBytes);
+          int offset = 0;
+          for (final chunk in bytes) {
+            result.setRange(offset, offset + chunk.length, chunk);
+            offset += chunk.length;
+          }
+          
+          print('✅ MediaService.downloadFileBytes - Download completo dopo retry: ${result.length} bytes');
+          return result;
+        }
       } else {
-        print('❌ MediaService.downloadFileBytes - Errore HTTP: ${response.statusCode}');
+        print('❌ MediaService.downloadFileBytes - Errore HTTP: ${streamedResponse.statusCode}');
         return null;
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
       print('❌ MediaService.downloadFileBytes - Errore: $e');
+      print('   StackTrace: $stackTrace');
       return null;
     }
+    return null;
   }
 
   /// 🔐 Scarica E decifra file cifrato
@@ -904,14 +1243,58 @@ class MediaService {
       print('🔐 MediaService.downloadAndDecryptFile - File scaricato: ${encryptedBytes.length} bytes');
       
       // 2. Prepara dati per decifratura
+      print('🔐 MediaService.downloadAndDecryptFile - Preparazione dati per decifratura...');
+      print('   📦 encryptionMetadata keys: ${encryptionMetadata.keys.toList()}');
+      print('   📦 iv type: ${encryptionMetadata['iv'].runtimeType}, value: ${encryptionMetadata['iv']}');
+      print('   📦 mac type: ${encryptionMetadata['mac'].runtimeType}, value: ${encryptionMetadata['mac']}');
+      
+      // Verifica che IV e MAC siano stringhe base64 valide
+      final ivStr = encryptionMetadata['iv'] as String?;
+      final macStr = encryptionMetadata['mac'] as String?;
+      
+      if (ivStr == null || macStr == null) {
+        throw Exception('IV o MAC mancanti nei metadata');
+      }
+      
+      // Assicurati che siano già in base64 (non decodificarli di nuovo)
       final encryptedData = {
         'ciphertext': base64.encode(encryptedBytes),
-        'iv': encryptionMetadata['iv'] as String,
-        'mac': encryptionMetadata['mac'] as String,
+        'iv': ivStr,  // Già in base64
+        'mac': macStr,  // Già in base64
       };
       
+      print('🔐 MediaService.downloadAndDecryptFile - Dati preparati:');
+      print('   📦 encryptedBytes scaricati: ${encryptedBytes.length} bytes');
+      print('   📦 ciphertext length (base64): ${(encryptedData['ciphertext'] as String).length}');
+      print('   📦 ciphertext first 50 chars: ${(encryptedData['ciphertext'] as String).substring(0, (encryptedData['ciphertext'] as String).length > 50 ? 50 : (encryptedData['ciphertext'] as String).length)}...');
+      print('   📦 ciphertext last 50 chars: ...${(encryptedData['ciphertext'] as String).substring((encryptedData['ciphertext'] as String).length > 50 ? (encryptedData['ciphertext'] as String).length - 50 : 0)}');
+      print('   📦 iv (base64): ${ivStr.length > 30 ? ivStr.substring(0, 30) + "..." : ivStr}');
+      print('   📦 mac (base64): ${macStr.length > 30 ? macStr.substring(0, 30) + "..." : macStr}');
+      
+      // 🔍 VERIFICA: Decodifica il ciphertext per vedere se corrisponde ai bytes scaricati
+      try {
+        final decodedCiphertext = base64.decode(encryptedData['ciphertext'] as String);
+        print('   🔍 Decoded ciphertext: ${decodedCiphertext.length} bytes');
+        print('   🔍 encryptedBytes == decodedCiphertext: ${encryptedBytes.length == decodedCiphertext.length}');
+        if (encryptedBytes.length == decodedCiphertext.length) {
+          bool bytesMatch = true;
+          for (int i = 0; i < encryptedBytes.length && i < 100; i++) {
+            if (encryptedBytes[i] != decodedCiphertext[i]) {
+              bytesMatch = false;
+              print('   ❌ Bytes differiscono alla posizione $i: ${encryptedBytes[i]} vs ${decodedCiphertext[i]}');
+              break;
+            }
+          }
+          if (bytesMatch) {
+            print('   ✅ Primi 100 bytes corrispondono!');
+          }
+        }
+      } catch (e) {
+        print('   ⚠️ Errore verifica bytes: $e');
+      }
+      
       // 3. Decifra
-      print('🔐 MediaService.downloadAndDecryptFile - Decifratura...');
+      print('🔐 MediaService.downloadAndDecryptFile - Avvio decifratura...');
       final decryptedBytes = await E2EManager.decryptFileBytes(
         senderId,
         encryptedData,
@@ -948,22 +1331,62 @@ class MediaService {
 
   /// 🔐 Helper: Estrai encryption metadata da metadata allegato
   static Map<String, dynamic>? getEncryptionMetadata(Map<String, dynamic>? metadata) {
-    if (metadata == null) return null;
+    if (metadata == null) {
+      print('🔐 MediaService.getEncryptionMetadata - metadata è NULL');
+      return null;
+    }
+    
+    print('🔐 MediaService.getEncryptionMetadata - Cerca metadata in: ${metadata.keys.toList()}');
     
     // Caso 1: Metadata dentro campo 'encryption'
     if (metadata.containsKey('encryption')) {
-      return metadata['encryption'] as Map<String, dynamic>?;
+      final encryption = metadata['encryption'] as Map<String, dynamic>?;
+      print('   ✅ Trovati in metadata["encryption"]: ${encryption?.keys.toList()}');
+      if (encryption != null && encryption['iv'] != null && encryption['mac'] != null) {
+        return encryption;
+      }
     }
     
     // Caso 2: Metadata direttamente nel root
-    if (metadata['encrypted'] == true) {
-      return {
-        'iv': metadata['iv'],
-        'mac': metadata['mac'],
-        'encrypted': true,
-      };
+    if (metadata['encrypted'] == true || metadata.containsKey('iv')) {
+      print('   ✅ Trovati direttamente nel root');
+      if (metadata['iv'] != null && metadata['mac'] != null) {
+        return {
+          'iv': metadata['iv'],
+          'mac': metadata['mac'],
+          'encrypted': metadata['encrypted'] ?? true,
+          if (metadata['original_size'] != null) 'original_size': metadata['original_size'],
+          if (metadata['original_file_name'] != null) 'original_file_name': metadata['original_file_name'],
+          if (metadata['original_file_extension'] != null) 'original_file_extension': metadata['original_file_extension'],
+          if (metadata['local_file_name'] != null) 'local_file_name': metadata['local_file_name'],
+        };
+      }
     }
     
+    // Caso 3: Cerca in nested metadata (per messaggi real-time)
+    if (metadata.containsKey('metadata') && metadata['metadata'] is Map) {
+      final nestedMeta = metadata['metadata'] as Map<String, dynamic>;
+      print('   🔍 Cerca in metadata["metadata"]: ${nestedMeta.keys.toList()}');
+      
+      if (nestedMeta.containsKey('encryption')) {
+        final enc = nestedMeta['encryption'] as Map<String, dynamic>?;
+        if (enc != null && enc['iv'] != null && enc['mac'] != null) {
+          print('   ✅ Trovati in metadata["metadata"]["encryption"]');
+          return enc;
+        }
+      }
+      
+      if (nestedMeta['iv'] != null && nestedMeta['mac'] != null) {
+        print('   ✅ Trovati in metadata["metadata"] (root)');
+        return {
+          'iv': nestedMeta['iv'],
+          'mac': nestedMeta['mac'],
+          'encrypted': nestedMeta['encrypted'] ?? true,
+        };
+      }
+    }
+    
+    print('   ❌ Nessun encryption metadata trovato!');
     return null;
   }
 }

@@ -5,7 +5,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
 import 'message_service.dart';
 import 'real_chat_service.dart';
+import 'media_service.dart'; // 🔐 CORREZIONE: Import MediaService per invalidare cache video
 import 'e2e_manager.dart';
+import 'timezone_service.dart'; // 🔐 CORREZIONE: Import TimezoneService per formattazione timestamp
 import '../models/message_model.dart';
 import '../models/chat_model.dart';
 
@@ -32,6 +34,15 @@ class UnifiedRealtimeService extends ChangeNotifier {
   Timer? _chatMonitorTimer;
   Map<String, bool> _lastGestationState = {};
   Set<String> _notifiedGestations = {}; // Traccia notifiche già inviate
+  
+  // 🔐 REALTIME: Monitoraggio stato crittografia per chat
+  Timer? _encryptionStatusTimer;
+  Map<String, bool> _lastEncryptionStatus = {}; // chatId -> isEncrypted
+  
+  // 🚫 REALTIME: Monitoraggio stato utente (bloccato/disabilitato)
+  Timer? _userStatusTimer;
+  bool? _lastUserStatus; // Ultimo stato is_active dell'utente
+  String? _lastUsername; // Username dell'utente (per polling post-logout)
 
   // Getters
   bool get isInitialized => _isInitialized;
@@ -44,7 +55,15 @@ class UnifiedRealtimeService extends ChangeNotifier {
   }
   String? get currentUserId => _currentUserId;
 
+  /// Forza la re-inizializzazione (utile dopo login)
+  Future<void> forceReInit() async {
+    print('🔄 UnifiedRealtimeService - FORZANDO re-inizializzazione...');
+    _isInitialized = false;
+    await initialize();
+  }
+
   /// Inizializza il servizio
+  /// Funziona sia con utente loggato che senza (per polling stato utente dopo logout)
   Future<void> initialize() async {
     if (_isInitialized) {
       print('🔄 UnifiedRealtimeService - Già inizializzato, skip');
@@ -58,9 +77,32 @@ class UnifiedRealtimeService extends ChangeNotifier {
       await _loadUserData();
       print('👤 UnifiedRealtimeService - User data caricati: $_currentUserId');
       
+      // 🚫 REALTIME: Se non c'è userId ma c'è un username salvato, avvia solo il polling stato utente
+      if (_currentUserId == null) {
+        if (_lastUsername != null) {
+          print('⚠️ UnifiedRealtimeService - Nessun userId, ma username presente: $_lastUsername');
+          print('🚫 Avvio SOLO polling stato utente (senza registrazione dispositivo)');
+          
+          // Avvia solo il polling dello stato utente (senza registrazione dispositivo)
+          _startUserStatusPolling();
+          
+          _isInitialized = true;
+          print('✅ UnifiedRealtimeService - Inizializzazione completata (solo polling stato utente)');
+          return;
+        } else {
+          print('❌ UnifiedRealtimeService - ATTENZIONE: _currentUserId è NULL e nessun username salvato!');
+          return;
+        }
+      }
+      
       // 2. Genera token dispositivo
       await _generateDeviceToken();
       print('📱 UnifiedRealtimeService - Device token generato: $_deviceToken');
+      
+      if (_deviceToken == null) {
+        print('❌ UnifiedRealtimeService - ATTENZIONE: _deviceToken è NULL! Impossibile registrare dispositivo.');
+        return;
+      }
       
       // 3. Registra dispositivo con SecureVOX Notify
       await _registerDevice();
@@ -70,10 +112,14 @@ class UnifiedRealtimeService extends ChangeNotifier {
       _startMessagePolling();
       print('🔄 UnifiedRealtimeService - Polling avviato');
       
+      // 🚫 REALTIME: Avvia anche il polling stato utente (sempre attivo)
+      _startUserStatusPolling();
+      
       _isInitialized = true;
       print('✅ UnifiedRealtimeService - Inizializzazione completata');
     } catch (e) {
       print('❌ UnifiedRealtimeService - Errore inizializzazione: $e');
+      print('❌ Stack trace: ${StackTrace.current}');
     }
   }
 
@@ -209,10 +255,19 @@ class UnifiedRealtimeService extends ChangeNotifier {
     print('🔄 UnifiedRealtimeService - Avvio polling con token: $_deviceToken');
     print('🔄 UnifiedRealtimeService - URL polling: $notifyServerUrl/poll/$_deviceToken');
     
-    // WORKAROUND: Avvia monitoraggio chat per rilevare gestazioni
-    _startChatMonitoring();
-    
-    // CORREZIONE: Polling ridotto (5 secondi) per evitare throttling server
+      // WORKAROUND: Avvia monitoraggio chat per rilevare gestazioni
+      _startChatMonitoring();
+      
+      // 🔐 REALTIME: Avvia monitoraggio stato crittografia
+      _startEncryptionStatusPolling();
+      
+      // NOTA: Il polling stato utente viene avviato anche in initialize() quando non c'è userId
+      // Qui viene avviato solo se non era già stato avviato (per utenti loggati)
+      if (_userStatusTimer == null) {
+        _startUserStatusPolling();
+      }
+      
+      // CORREZIONE: Polling ridotto (5 secondi) per evitare throttling server
     _pollingTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
       try {
         print('🔄 UnifiedRealtimeService - Polling in corso...');
@@ -231,16 +286,47 @@ class UnifiedRealtimeService extends ChangeNotifier {
           
           // CORREZIONE: Il server restituisce 'notifications' non 'messages'
           if (data['notifications'] != null && (data['notifications'] as List).isNotEmpty) {
+            print('');
+            print('📨 ===== NOTIFICHE RICEVUTE DAL POLLING =====');
             print('📨 UnifiedRealtimeService - Trovate ${(data['notifications'] as List).length} notifiche');
+            
+            // 🔄 REFRESH AUTO: Reset contatore quando troviamo notifiche
+            _noNotificationCount = 0;
+            
             for (final notification in data['notifications']) {
+              final notifType = notification['notification_type'] ?? notification['type'] ?? 'unknown';
+              final messageType = notification['data']?['message_type'] ?? 'unknown';
+              final messageId = notification['data']?['message_id'] ?? notification['message_id'] ?? 'unknown';
+              print('📨 Notifica: type=$notifType, messageType=$messageType, messageId=$messageId');
               _handleIncomingMessage(notification);
             }
+            print('📨 ==========================================');
+            print('');
             
             // Pulisci la cache dei messaggi processati periodicamente
             _cleanupProcessedMessageIds();
             _cleanupSentNotificationIds();
           } else {
             print('🔄 UnifiedRealtimeService - Nessun messaggio nuovo');
+            
+            // 🔄 REFRESH AUTO: Incrementa contatore e verifica se è necessario fare refresh
+            _noNotificationCount++;
+            print('🔄 UnifiedRealtimeService - Polling senza notifiche: $_noNotificationCount/$_maxNoNotificationCount');
+            
+            if (_noNotificationCount >= _maxNoNotificationCount) {
+              print('');
+              print('🔄 ===== TRIGGER REFRESH AUTOMATICO =====');
+              print('🔄 Nessuna notifica ricevuta per ${_maxNoNotificationCount * 5} secondi');
+              print('🔄 Eseguo refresh automatico messaggi per chat attive...');
+              print('🔄 =======================================');
+              print('');
+              
+              // Reset contatore per evitare refresh continui
+              _noNotificationCount = 0;
+              
+              // Esegui refresh delle chat attive
+              await _refreshActiveChats();
+            }
           }
         } else {
           print('❌ UnifiedRealtimeService - Errore polling: ${response.statusCode}');
@@ -260,6 +346,10 @@ class UnifiedRealtimeService extends ChangeNotifier {
   
   // Cache per evitare invii duplicati di notifiche
   final Set<String> _sentNotificationIds = {};
+  
+  // 🔄 REFRESH AUTO: Contatore per polling senza notifiche
+  int _noNotificationCount = 0;
+  static const int _maxNoNotificationCount = 6; // 6 polling = 30 secondi (6 * 5s)
 
   /// Gestisce le notifiche in arrivo (messaggi e eliminazioni chat)
   void _handleIncomingMessage(Map<String, dynamic> notification) async {
@@ -288,8 +378,35 @@ class UnifiedRealtimeService extends ChangeNotifier {
               final decryptedData = jsonDecode(decrypted) as Map<String, dynamic>;
               print('🔐 UnifiedRealtimeService - ✅ Notifica decifrata con successo');
               
+              // 🔐 FIX CRITICO: Preserva i metadata del file (iv, mac, encrypted) anche dopo decifratura
+              final originalMetadata = data['metadata'] as Map<String, dynamic>?;
+              final decryptedPayload = decryptedData['data'] ?? decryptedData;
+              
               // Sostituisci data con i dati decifrati
-              data = decryptedData['data'] ?? decryptedData;
+              data = Map<String, dynamic>.from(decryptedPayload);
+              
+              // 🔐 RI-INSERISCI i metadata del file se presenti nella notifica originale
+              if (originalMetadata != null && originalMetadata.isNotEmpty) {
+                print('🔐 UnifiedRealtimeService - Preservo metadata file dalla notifica originale');
+                print('🔐   Metadata originali: ${originalMetadata.keys}');
+                
+                // Assicurati che i metadata siano nel posto giusto
+                if (data['metadata'] == null) {
+                  data['metadata'] = <String, dynamic>{};
+                }
+                final currentMetadata = data['metadata'] as Map<String, dynamic>;
+                
+                // Copia i metadata di cifratura del file (iv, mac, encrypted, original_size, etc.)
+                if (originalMetadata['iv'] != null) currentMetadata['iv'] = originalMetadata['iv'];
+                if (originalMetadata['mac'] != null) currentMetadata['mac'] = originalMetadata['mac'];
+                if (originalMetadata['encrypted'] != null) currentMetadata['encrypted'] = originalMetadata['encrypted'];
+                if (originalMetadata['original_size'] != null) currentMetadata['original_size'] = originalMetadata['original_size'];
+                if (originalMetadata['original_file_name'] != null) currentMetadata['original_file_name'] = originalMetadata['original_file_name'];
+                if (originalMetadata['original_file_extension'] != null) currentMetadata['original_file_extension'] = originalMetadata['original_file_extension'];
+                if (originalMetadata['local_file_name'] != null) currentMetadata['local_file_name'] = originalMetadata['local_file_name'];
+                
+                print('🔐   Metadata preservati: iv=${currentMetadata['iv'] != null}, mac=${currentMetadata['mac'] != null}, encrypted=${currentMetadata['encrypted']}');
+              }
               
               // Log del contenuto decifrato (per debug)
               print('🔐 UnifiedRealtimeService - Sender: ${decryptedData['sender_name']}');
@@ -316,7 +433,14 @@ class UnifiedRealtimeService extends ChangeNotifier {
       // Gestione messaggi normali
       final chatId = data['chat_id'];
       messageId = data['message_id']; // Assegna alla variabile dichiarata fuori dal try
-      final senderId = data['sender_id'];
+      
+      // 🔐 FIX: sender_id può essere sia in notification root che in data
+      final senderId = notification['sender_id'] ?? data['sender_id'];
+      print('🔑 DEBUG sender_id:');
+      print('   notification[sender_id]: ${notification['sender_id']}');
+      print('   data[sender_id]: ${data['sender_id']}');
+      print('   senderId finale: $senderId');
+      
       final content = data['content'];
       final messageType = data['message_type'];
       final timestamp = data['timestamp'];
@@ -328,10 +452,21 @@ class UnifiedRealtimeService extends ChangeNotifier {
       }
 
       // CORREZIONE: Controlla se il messaggio è già stato processato per evitare duplicati
+      print('');
+      print('📨 ===== CONTROLLO DUPLICATI =====');
+      print('📨 MessageId: $messageId');
+      print('📨 Messaggi già processati: ${_processedMessageIds.length}');
+      print('📨 Messaggio già presente: ${_processedMessageIds.contains(messageId)}');
       if (_processedMessageIds.contains(messageId)) {
-        print('⚠️ UnifiedRealtimeService - Messaggio già processato, skip: $messageId');
+        print('⚠️⚠️⚠️ MESSAGGIO GIÀ PROCESSATO - SKIP: $messageId');
+        print('📨 Questo potrebbe essere il motivo per cui il messaggio non appare!');
+        print('📨 =======================================');
+        print('');
         return;
       }
+      print('📨 ✅ Messaggio non ancora processato - procedo');
+      print('📨 =======================================');
+      print('');
 
       // CORREZIONE: Controlla se la chat è attualmente visualizzata per determinare lo stato di lettura
       final isCurrentlyViewing = _messageService?.isChatCurrentlyViewing(chatId) ?? false;
@@ -474,7 +609,7 @@ class UnifiedRealtimeService extends ChangeNotifier {
         isMe: isMe,
         type: parsedMessageType,
         content: messageContent, // ← Ora è decifrato!
-        time: _formatTime(timestamp ?? now.toIso8601String()),
+        time: TimezoneService.formatCallTime(timestamp != null ? DateTime.parse(timestamp) : now),
         timestamp: timestamp != null ? DateTime.parse(timestamp) : now,
         metadata: _createMetadataForMessageType(parsedMessageType, messageContent, data),
         isRead: shouldBeRead, // CORREZIONE: Solo se la chat destinatario è effettivamente visualizzata
@@ -486,9 +621,17 @@ class UnifiedRealtimeService extends ChangeNotifier {
         return;
       }
       
-      // ⚡ FIX: Aggiorna la lista chat PRIMA di addMessageToCache per evitare flash di "Messaggio cifrato"
-      // updateChatLastMessage ora chiama automaticamente notifyListeners()
-      _updateChatList(chatId, messageContent);
+      // ⚡ FIX: Aggiorna la lista chat SOLO se il messaggio è decifrato
+      // NON aggiornare con placeholder "..." per evitare flash
+      if (messageContent != '...' && 
+          !messageContent.contains('[Messaggio cifrato]') && 
+          !messageContent.contains('[Errore decifratura]')) {
+        print('✅ UnifiedRealtimeService - Aggiorno chat list con messaggio decifrato');
+        _updateChatList(chatId, messageContent);
+      } else {
+        print('⏸️ UnifiedRealtimeService - NON aggiorno chat list (messaggio non decifrato o placeholder)');
+        print('   → Mantengo l\'ultimo messaggio valido nella lista');
+      }
       
       _messageService!.addMessageToCache(chatId, incomingMessage, isRealtimeMessage: true);
       
@@ -501,8 +644,13 @@ class UnifiedRealtimeService extends ChangeNotifier {
       // ✅ Aggiungi l'ID del messaggio alla cache per evitare duplicati SOLO DOPO il successo
       _processedMessageIds.add(messageId);
       
+      print('');
+      print('✅ ===== MESSAGGIO PROCESSATO CON SUCCESSO =====');
       print('✅ UnifiedRealtimeService - Messaggio aggiunto alla cache: $chatId');
       print('✅ MessageId aggiunto ai processati: $messageId');
+      print('✅ Totale messaggi processati: ${_processedMessageIds.length}');
+      print('✅ ============================================');
+      print('');
       
     } catch (e) {
       print('❌ UnifiedRealtimeService - Errore gestione messaggio: $e');
@@ -922,32 +1070,103 @@ class UnifiedRealtimeService extends ChangeNotifier {
         print('🖼️   image_url: ${data['image_url']}');
         print('🖼️   imageUrl: ${data['imageUrl']}');
         print('🖼️   content: $content');
+        print('🖼️   metadata: ${data['metadata']}');
         
         final imageUrl = data['image_url'] ?? data['imageUrl'] ?? '';
         print('🖼️   URL finale estratto: $imageUrl');
         
-        return ImageMessageData(
-          imageUrl: imageUrl,
-          caption: data['caption'] ?? content,
-        ).toJson();
+        // 🔐 Estrai i metadata di cifratura se presenti
+        final metadata = data['metadata'] as Map<String, dynamic>? ?? {};
+        print('🔐 UnifiedRealtimeService - Metadata cifratura immagine:');
+        print('🔐   iv: ${metadata['iv']}');
+        print('🔐   mac: ${metadata['mac']}');
+        print('🔐   encrypted: ${metadata['encrypted']}');
+        
+        // Crea i metadata dell'immagine includendo i dati di cifratura
+        final imageMetadata = {
+          'imageUrl': imageUrl,
+          'caption': data['caption'] ?? content,
+          // 🔐 Includi i metadata di cifratura
+          if (metadata['iv'] != null) 'iv': metadata['iv'],
+          if (metadata['mac'] != null) 'mac': metadata['mac'],
+          if (metadata['encrypted'] != null) 'encrypted': metadata['encrypted'],
+          if (metadata['original_size'] != null) 'original_size': metadata['original_size'],
+        };
+        
+        print('🔐   Metadata finali per ImageMessageData: $imageMetadata');
+        
+        return imageMetadata;
         
       case MessageType.video:
-        // CORREZIONE: Debug dei dati ricevuti per i video
-        print('🎥 UnifiedRealtimeService._createMetadataForMessageType - DEBUG VIDEO:');
-        print('🎥   data keys: ${data.keys}');
-        print('🎥   video_url: ${data['video_url']}');
-        print('🎥   videoUrl: ${data['videoUrl']}');
+        print('');
+        print('🎥 ===== CREAZIONE METADATA VIDEO REAL-TIME =====');
+        print('🎥 data keys: ${data.keys.toList()}');
+        print('🎥 data completo: $data');
+        print('🎥 video_url: ${data['video_url']}');
+        print('🎥 videoUrl: ${data['videoUrl']}');
+        print('🎥 thumbnail_url: ${data['thumbnail_url']}');
+        print('🎥 thumbnailUrl: ${data['thumbnailUrl']}');
+        print('🎥 metadata in data: ${data['metadata']}');
         
         final videoUrl = data['video_url'] ?? data['videoUrl'] ?? '';
         final thumbnailUrl = data['thumbnail_url'] ?? data['thumbnailUrl'] ?? '';
-        print('🎥   Video URL finale: $videoUrl');
-        print('🎥   Thumbnail URL finale: $thumbnailUrl');
+        print('🎥 Video URL finale: $videoUrl');
+        print('🎥 Thumbnail URL finale: $thumbnailUrl');
         
-        return VideoMessageData(
-          videoUrl: videoUrl,
-          thumbnailUrl: thumbnailUrl,
-          caption: data['caption'] ?? content,
-        ).toJson();
+        // 🔐 FIX CRITICO: Estrai i metadata di cifratura da più possibili posizioni
+        Map<String, dynamic> metadata = {};
+        
+        // Prova prima da data['metadata']
+        if (data['metadata'] != null && data['metadata'] is Map) {
+          metadata = Map<String, dynamic>.from(data['metadata'] as Map);
+          print('🔐 Metadata trovati in data[\'metadata\']: ${metadata.keys.toList()}');
+        }
+        
+        // 🔐 FALLBACK: Se non trovati, prova direttamente da data (per notifiche E2EE)
+        if ((metadata['iv'] == null || metadata['mac'] == null) && data['iv'] != null) {
+          print('🔐 FALLBACK: Metadata trovati direttamente in data (notifica E2EE)');
+          metadata['iv'] = data['iv'];
+          metadata['mac'] = data['mac'];
+          metadata['encrypted'] = data['encrypted'];
+          if (data['original_size'] != null) metadata['original_size'] = data['original_size'];
+          if (data['original_file_name'] != null) metadata['original_file_name'] = data['original_file_name'];
+          if (data['original_file_extension'] != null) metadata['original_file_extension'] = data['original_file_extension'];
+          if (data['local_file_name'] != null) metadata['local_file_name'] = data['local_file_name'];
+        }
+        
+        print('🔐 Metadata cifratura video estratti:');
+        print('🔐   iv presente: ${metadata['iv'] != null}');
+        print('🔐   mac presente: ${metadata['mac'] != null}');
+        print('🔐   encrypted: ${metadata['encrypted']}');
+        print('🔐   original_size: ${metadata['original_size']}');
+        print('🔐   original_file_name: ${metadata['original_file_name']}');
+        print('🔐   original_file_extension: ${metadata['original_file_extension']}');
+        print('🔐   local_file_name: ${metadata['local_file_name']}');
+
+        final videoMetadata = <String, dynamic>{
+          'videoUrl': videoUrl,
+          'thumbnailUrl': thumbnailUrl,
+          'caption': data['caption'] ?? content,
+          // 🔐 CRITICO: Includi TUTTI i metadata cifratura se presenti
+          if (metadata['iv'] != null) 'iv': metadata['iv'],
+          if (metadata['mac'] != null) 'mac': metadata['mac'],
+          if (metadata['encrypted'] != null) 'encrypted': metadata['encrypted'],
+          if (metadata['original_size'] != null) 'original_size': metadata['original_size'],
+          if (metadata['original_file_name'] != null) 'original_file_name': metadata['original_file_name'],
+          if (metadata['original_file_extension'] != null) 'original_file_extension': metadata['original_file_extension'],
+          if (metadata['local_file_name'] != null) 'local_file_name': metadata['local_file_name'],
+        };
+
+        print('🎥 Metadata finali per VideoMessageData:');
+        print('🎥   keys: ${videoMetadata.keys.toList()}');
+        print('🎥   videoUrl: ${videoMetadata['videoUrl']}');
+        print('🎥   🔐 iv presente: ${videoMetadata['iv'] != null}');
+        print('🎥   🔐 mac presente: ${videoMetadata['mac'] != null}');
+        print('🎥   🔐 encrypted: ${videoMetadata['encrypted']}');
+        print('🎥   🔐 local_file_name: ${videoMetadata['local_file_name']}');
+        print('🎥 ================================================');
+        print('');
+        return videoMetadata;
         
       case MessageType.voice:
         // CORREZIONE: Debug dei dati ricevuti per l'audio
@@ -1178,13 +1397,469 @@ class UnifiedRealtimeService extends ChangeNotifier {
     }
   }
 
+  /// 🔐 REALTIME: Avvia il polling dello stato di crittografia per tutte le chat attive
+  void _startEncryptionStatusPolling() {
+    if (_encryptionStatusTimer != null) {
+      _encryptionStatusTimer!.cancel();
+    }
+    
+    print('🔐 UnifiedRealtimeService - Avvio polling stato crittografia');
+    
+    // Polling ogni 3 secondi per stato crittografia (molto frequente per realtime)
+    _encryptionStatusTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
+      try {
+        await _checkEncryptionStatusForAllChats();
+      } catch (e) {
+        // 🚫 Gestisci errori silenziosamente - potrebbero essere problemi di rete temporanei
+        // Solo logga se è un errore critico (non errori di rete)
+        if (e.toString().contains('SocketException') || 
+            e.toString().contains('Failed host lookup') ||
+            e.toString().contains('Connection refused')) {
+          // Errore di rete: silenzioso per non disturbare l'utente
+        } else {
+          print('⚠️ UnifiedRealtimeService - Errore polling stato crittografia: $e');
+        }
+      }
+    });
+  }
+  
+  /// 🔐 REALTIME: Verifica lo stato di crittografia per tutte le chat attive
+  Future<void> _checkEncryptionStatusForAllChats() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('securevox_auth_token');
+      
+      if (token == null) {
+        // 🚫 NON loggare come errore - è normale quando l'utente non è ancora loggato
+        return;
+      }
+      
+      // Ottieni tutte le chat attive dalla cache
+      final chats = RealChatService.cachedChats;
+      
+      if (chats.isEmpty) {
+        return; // Nessuna chat da verificare
+      }
+      
+      // Verifica lo stato per ogni chat
+      print('🔐 UnifiedRealtimeService - Inizio polling stato crittografia per ${chats.length} chat(s)');
+      
+      for (final chat in chats) {
+        try {
+          final response = await http.get(
+            Uri.parse('http://127.0.0.1:8001/api/chats/${chat.id}/encryption-status/'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Token $token',
+            },
+          );
+          
+          if (response.statusCode == 200) {
+            final data = jsonDecode(response.body);
+            // 🔐 REALTIME: Gestisci null per campo booleano (cast sicuro)
+            final isEncrypted = (data['is_encrypted'] as bool?) ?? true; // Default: cifrata
+            
+            // 🔐 DEBUG: Log dettagliato per tracciare il polling
+            print('');
+            print('🔐 ===== POLLING STATO CRITTOGRAFIA CHAT =====');
+            print('🔐 Chat ID: ${chat.id}');
+            print('🔐 Chat Name: ${chat.name}');
+            print('🔐 Response from server:');
+            print('   • is_encrypted: $isEncrypted');
+            print('   • participants_status: ${data['participants_status']}');
+            print('   • timestamp: ${data['timestamp']}');
+            
+            // 🔐 REALTIME: Aggiorna sempre lo stato, anche se non è cambiato (per sincronizzazione)
+            final lastStatus = _lastEncryptionStatus[chat.id];
+            final chatIndex = RealChatService.cachedChats.indexWhere((c) => c.id == chat.id);
+            
+            if (chatIndex != -1) {
+              final currentChat = RealChatService.cachedChats[chatIndex];
+              final currentState = currentChat.isEncrypted;
+              final needsUpdate = currentState != isEncrypted;
+              
+              print('🔐 Stato corrente nella cache:');
+              print('   • currentChat.isEncrypted: $currentState');
+              print('   • lastStatus (memoria): $lastStatus');
+              print('   • nuovo isEncrypted dal server: $isEncrypted');
+              print('   • needsUpdate: $needsUpdate');
+              
+              if (needsUpdate || lastStatus == null) {
+                if (lastStatus != null && lastStatus != isEncrypted) {
+                  print('');
+                  print('⚠️⚠️⚠️ CAMBIO STATO CRITTOGRAFIA RILEVATO! ⚠️⚠️⚠️');
+                  print('🔐 Chat: ${chat.name} (${chat.id})');
+                  print('🔐 Stato precedente: $lastStatus');
+                  print('🔐 Nuovo stato: $isEncrypted');
+                  print('🔐 Azione: ${isEncrypted ? "CRITTOTAGGIO ABILITATO" : "CRITTOTAGGIO DISABILITATO"}');
+                  print('⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️');
+                  print('');
+                } else if (lastStatus == null) {
+                  print('🔐 UnifiedRealtimeService - Stato crittografia inizializzato per chat ${chat.id}: isEncrypted=$isEncrypted');
+                }
+                
+                // Aggiorna la chat nella cache
+                final updatedChat = currentChat.copyWith(
+                  isEncrypted: isEncrypted,
+                );
+                RealChatService.cachedChats[chatIndex] = updatedChat;
+                
+                print('🔐 Cache aggiornata:');
+                print('   • RealChatService.cachedChats[$chatIndex].isEncrypted = ${updatedChat.isEncrypted}');
+                
+                // 🔐 REALTIME: Invalida SOLO cache media quando cambia lo stato di cifratura
+                // CORREZIONE BUG 1: Non invalidare tutta la cache per evitare ricaricamento video vecchi
+                // Invalida solo media (video/immagini/file) mantenendo messaggi di testo
+                try {
+                  final messageService = MessageService();
+                  messageService.invalidateMediaCacheForChat(chat.id);
+                  
+                  // 🔐 CORREZIONE BUG VIDEO UGUALI: Invalida anche il mapping videoUrl -> local_file_name
+                  // Questo previene che video vecchi vengano caricati usando il mapping errato
+                  final mediaService = MediaService();
+                  await mediaService.clearVideoCacheMapping();
+                  
+                  print('🔐 Cache media e mapping video invalidati per chat ${chat.id}');
+                } catch (e) {
+                  print('⚠️ Errore invalidazione cache media: $e');
+                }
+                
+                // Notifica i widget che lo stato è cambiato
+                RealChatService.notifyWidgets();
+                notifyListeners();
+                
+                print('🔐 Notifiche inviate:');
+                print('   • RealChatService.notifyWidgets() chiamato');
+                print('   • UnifiedRealtimeService.notifyListeners() chiamato');
+                print('   • Cache messaggi invalidata');
+                print('✅ UnifiedRealtimeService - Chat ${chat.id} aggiornata: isEncrypted=$isEncrypted');
+                print('🔐 =======================================');
+                print('');
+              } else {
+                print('🔐 Nessun cambio rilevato - stato invariato');
+                print('🔐 =======================================');
+                print('');
+              }
+            } else {
+              print('⚠️ Chat ${chat.id} non trovata nella cache!');
+              print('🔐 =======================================');
+              print('');
+            }
+            
+            // Aggiorna lo stato memorizzato
+            _lastEncryptionStatus[chat.id] = isEncrypted;
+            
+          } else if (response.statusCode == 401 || response.statusCode == 403) {
+            // Token non valido: silenzioso (utente potrebbe non essere ancora loggato)
+          } else if (response.statusCode >= 500) {
+            // Errore server: silenzioso per non disturbare l'utente
+          }
+          // Altri errori: silenziosi
+        } catch (e) {
+          // 🚫 Gestisci errori silenziosamente - potrebbero essere problemi di rete temporanei
+          if (e.toString().contains('SocketException') || 
+              e.toString().contains('Failed host lookup') ||
+              e.toString().contains('Connection refused')) {
+            // Errore di rete: silenzioso
+          } else {
+            // Altri errori: logga solo se critico
+            print('⚠️ UnifiedRealtimeService - Errore verifica stato crittografia per chat ${chat.id}: $e');
+          }
+        }
+      }
+    } catch (e) {
+      // 🚫 Gestisci errori silenziosamente - potrebbero essere problemi di rete temporanei
+      if (e.toString().contains('SocketException') || 
+          e.toString().contains('Failed host lookup') ||
+          e.toString().contains('Connection refused')) {
+        // Errore di rete: silenzioso
+      } else {
+        print('⚠️ UnifiedRealtimeService - Errore generale polling stato crittografia: $e');
+      }
+    }
+  }
+
+  /// 🚫 REALTIME: Avvia il polling dello stato utente (bloccato/disabilitato)
+  /// Funziona sia durante la sessione che dopo il logout (quando c'è un username salvato)
+  void _startUserStatusPolling() {
+    if (_userStatusTimer != null) {
+      _userStatusTimer!.cancel();
+    }
+    
+    print('🚫 UnifiedRealtimeService - Avvio polling stato utente');
+    
+    // Polling ogni 3 secondi per stato utente (stessa frequenza del polling crittografia)
+    _userStatusTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
+      try {
+        // 🚫 REALTIME: Continua il polling anche senza token se abbiamo un username salvato
+        await _checkUserStatus();
+      } catch (e) {
+        print('❌ UnifiedRealtimeService - Errore polling stato utente: $e');
+      }
+    });
+  }
+  
+  /// 🚫 REALTIME: Verifica lo stato dell'utente corrente (se è bloccato/disabilitato)
+  /// Funziona sia con token (utente loggato) che senza (utente bloccato che deve verificare)
+  Future<void> _checkUserStatus() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('securevox_auth_token');
+      
+      // Ottieni l'username (sia da token che da SharedPreferences)
+      String? username;
+      if (_lastUsername != null) {
+        username = _lastUsername;
+      } else {
+        // Prova a ottenere l'username dall'utente salvato
+        final userJson = prefs.getString('securevox_current_user');
+        if (userJson != null) {
+          try {
+            final userData = jsonDecode(userJson);
+            username = userData['username']?.toString();
+            _lastUsername = username;
+          } catch (e) {
+            print('⚠️ UnifiedRealtimeService - Errore parsing user JSON: $e');
+          }
+        }
+      }
+      
+      http.Response response;
+      
+      try {
+        if (token != null && username == null) {
+          // Utente loggato: usa endpoint con autenticazione
+          response = await http.get(
+            Uri.parse('http://127.0.0.1:8001/api/users/my-status/'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Token $token',
+            },
+          ).timeout(const Duration(seconds: 5)); // Timeout per evitare attese infinite
+        } else if (username != null) {
+          // Utente non loggato o bloccato: usa endpoint senza autenticazione
+          response = await http.get(
+            Uri.parse('http://127.0.0.1:8001/api/users/status-by-username/?username=$username'),
+            headers: {
+              'Content-Type': 'application/json',
+            },
+          ).timeout(const Duration(seconds: 5)); // Timeout per evitare attese infinite
+        } else {
+          // Nessun username e nessun token: non possiamo verificare
+          // 🚫 NON loggare come errore - è normale quando l'utente non è ancora loggato
+          return;
+        }
+      } catch (e) {
+        // 🚫 Gestisci errori di connessione silenziosamente
+        if (e.toString().contains('SocketException') || 
+            e.toString().contains('Failed host lookup') ||
+            e.toString().contains('Connection refused') ||
+            e.toString().contains('TimeoutException')) {
+          // Errore di rete o timeout: silenzioso (non mostrare all'utente)
+          return;
+        }
+        // Rilancia altri errori per gestirli nel catch principale
+        rethrow;
+      }
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        // 🚫 REALTIME: Gestisci null per campi booleani (cast sicuro)
+        final isActive = (data['is_active'] as bool?) ?? true; // Default: attivo
+        final isBlocked = (data['is_blocked'] as bool?) ?? false; // Default: non bloccato
+        final message = (data['message'] as String?) ?? 'Utente attivo';
+        
+        // Salva l'username per polling futuro (anche dopo logout)
+        if (data['username'] != null) {
+          _lastUsername = data['username'] as String;
+        }
+        
+        // Controlla se lo stato è cambiato
+        if (_lastUserStatus != null && _lastUserStatus! && !isActive) {
+          // L'utente è stato appena bloccato!
+          print('🚫 UnifiedRealtimeService - ⚠️ UTENTE BLOCCATO!');
+          print('   Stato precedente: attivo');
+          print('   Stato corrente: bloccato');
+          print('   Messaggio: $message');
+          
+          // 🚫 CRITICO: Forza logout immediato quando l'utente viene bloccato
+          _forceLogoutDueToBlock(message);
+          
+          // Invia anche evento globale per mostrare il toast (prima del logout)
+          _broadcastUserBlockedEvent(message);
+        } else if (_lastUserStatus != null && !_lastUserStatus! && isActive) {
+          // 🎉 L'utente è stato appena SBLOCCATO!
+          print('✅ UnifiedRealtimeService - ⚠️ UTENTE SBLOCCATO!');
+          print('   Stato precedente: bloccato');
+          print('   Stato corrente: attivo');
+          print('   Messaggio: $message');
+          
+          // Invia evento globale per notificare che l'utente può rifare login
+          _broadcastUserUnblockedEvent(message);
+        }
+        
+        // Aggiorna lo stato memorizzato
+        _lastUserStatus = isActive;
+        
+      } else if (response.statusCode == 401 || response.statusCode == 403) {
+        // Token non valido o utente non autorizzato - probabilmente bloccato
+        print('🚫 UnifiedRealtimeService - Token non valido o utente bloccato (${response.statusCode})');
+        if (_lastUserStatus != null && _lastUserStatus!) {
+          // L'utente era attivo prima e ora il token non funziona più
+          print('🚫 UnifiedRealtimeService - ⚠️ UTENTE BLOCCATO (token non valido)!');
+          
+          // 🚫 CRITICO: Forza logout immediato quando il token non è più valido (utente bloccato)
+          _forceLogoutDueToBlock('Utente disabilitato temporaneamente');
+          
+          _broadcastUserBlockedEvent('Utente disabilitato temporaneamente');
+          _lastUserStatus = false;
+        }
+      }
+    } catch (e) {
+      // 🚫 NON loggare come errore critico se l'utente non è ancora loggato
+      // Solo logga se c'era un token/username disponibile (significa che era un errore reale)
+      if (_currentUserId != null || _lastUsername != null) {
+        print('⚠️ UnifiedRealtimeService - Errore verifica stato utente (utente loggato/bloccato): $e');
+      } else {
+        // Utente non loggato: è normale che il polling fallisca silenziosamente
+        // Non loggare per evitare messaggi di errore confusi nella login screen
+      }
+    }
+  }
+  
+  /// 🚫 REALTIME: Invia evento globale di utente bloccato
+  void _broadcastUserBlockedEvent(String message) {
+    final event = {
+      'type': 'user_blocked',
+      'message': message,
+      'timestamp': DateTime.now().toIso8601String(),
+    };
+    
+    _globalEventsController.add(event);
+    print('📡 UnifiedRealtimeService - Evento utente bloccato inviato: $event');
+  }
+  
+  /// 🚫 REALTIME: Forza logout quando l'utente viene bloccato
+  Future<void> _forceLogoutDueToBlock(String reason) async {
+    try {
+      print('🚫 UnifiedRealtimeService - FORZANDO LOGOUT per utente bloccato');
+      print('   Motivo: $reason');
+      
+      // Salva l'username PRIMA del logout per continuare il polling
+      if (_lastUsername == null) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final userJson = prefs.getString('securevox_current_user');
+          if (userJson != null) {
+            final userData = jsonDecode(userJson);
+            _lastUsername = userData['username']?.toString();
+            print('📡 UnifiedRealtimeService - Username salvato per polling post-logout: $_lastUsername');
+          }
+        } catch (e) {
+          print('⚠️ UnifiedRealtimeService - Errore salvataggio username: $e');
+        }
+      }
+      
+      // Importa AuthService per eseguire il logout
+      // NOTA: Devo usare un approccio globale per evitare dipendenze circolari
+      // Usiamo un callback o un service locator
+      _broadcastForceLogoutEvent(reason);
+      
+    } catch (e) {
+      print('❌ UnifiedRealtimeService - Errore forzatura logout: $e');
+    }
+  }
+  
+  /// 🚫 REALTIME: Invia evento globale per forzare logout
+  void _broadcastForceLogoutEvent(String reason) {
+    final event = {
+      'type': 'force_logout',
+      'reason': reason,
+      'message': 'Utente disabilitato temporaneamente. Logout forzato.',
+      'timestamp': DateTime.now().toIso8601String(),
+    };
+    
+    _globalEventsController.add(event);
+    print('📡 UnifiedRealtimeService - Evento logout forzato inviato: $event');
+  }
+  
+  /// ✅ REALTIME: Invia evento globale quando l'utente viene sbloccato
+  void _broadcastUserUnblockedEvent(String message) {
+    final event = {
+      'type': 'user_unblocked',
+      'message': message,
+      'username': _lastUsername,
+      'timestamp': DateTime.now().toIso8601String(),
+    };
+    
+    _globalEventsController.add(event);
+    print('📡 UnifiedRealtimeService - Evento utente sbloccato inviato: $event');
+  }
+  
+  /// Imposta l'username per il polling (chiamato dopo logout o dalla login screen)
+  void setUsernameForPolling(String? username) {
+    _lastUsername = username;
+    print('📡 UnifiedRealtimeService - Username impostato per polling: $username');
+  }
+
+  /// 🔄 REFRESH AUTO: Refresh automatico messaggi per chat attive
+  Future<void> _refreshActiveChats() async {
+    try {
+      print('🔄 UnifiedRealtimeService._refreshActiveChats - Inizio refresh chat attive...');
+      
+      // Verifica che MessageService sia disponibile
+      if (_messageService == null) {
+        print('⚠️ UnifiedRealtimeService._refreshActiveChats - MessageService non disponibile');
+        return;
+      }
+      
+      // Ottieni le chat attive dalla cache
+      final activeChats = RealChatService.cachedChats;
+      print('🔄 UnifiedRealtimeService._refreshActiveChats - Chat attive trovate: ${activeChats.length}');
+      
+      if (activeChats.isEmpty) {
+        print('🔄 UnifiedRealtimeService._refreshActiveChats - Nessuna chat attiva, skip refresh');
+        return;
+      }
+      
+      // Per ogni chat, forza il refresh dei messaggi
+      int refreshedCount = 0;
+      for (final chat in activeChats) {
+        try {
+          print('🔄 UnifiedRealtimeService._refreshActiveChats - Refresh chat: ${chat.id}');
+          
+          // Forza il refresh dei messaggi per questa chat
+          await _messageService!.forceLoadMessagesForChatDetail(chat.id);
+          
+          refreshedCount++;
+          print('✅ UnifiedRealtimeService._refreshActiveChats - Chat ${chat.id} refreshata');
+          
+          // Piccolo delay per evitare sovraccarico
+          await Future.delayed(const Duration(milliseconds: 200));
+        } catch (e) {
+          print('❌ UnifiedRealtimeService._refreshActiveChats - Errore refresh chat ${chat.id}: $e');
+        }
+      }
+      
+      print('');
+      print('✅ UnifiedRealtimeService._refreshActiveChats - Refresh completato: $refreshedCount/${activeChats.length} chat');
+      print('');
+    } catch (e) {
+      print('❌ UnifiedRealtimeService._refreshActiveChats - Errore generale: $e');
+    }
+  }
+
   /// Ferma il servizio
   void dispose() {
     _pollingTimer?.cancel();
     _chatMonitorTimer?.cancel();
+    _encryptionStatusTimer?.cancel(); // 🔐 REALTIME: Ferma anche polling crittografia
+    _userStatusTimer?.cancel(); // 🚫 REALTIME: Ferma anche polling stato utente
     _isInitialized = false;
     _processedMessageIds.clear();
     _sentNotificationIds.clear();
+    _lastEncryptionStatus.clear(); // 🔐 REALTIME: Pulisci cache stato crittografia
+    _lastUserStatus = null; // 🚫 REALTIME: Pulisci cache stato utente
     print('🛑 UnifiedRealtimeService - Servizio fermato');
   }
 }

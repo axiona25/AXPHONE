@@ -18,11 +18,18 @@ logger = logging.getLogger(__name__)
 
 # Configurazione supportati
 SUPPORTED_FILE_TYPES = {
+    # Formati Office moderni
     'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    # 🆕 Formati Office vecchi
+    'doc': 'application/msword',
+    'xls': 'application/vnd.ms-excel',
+    'ppt': 'application/vnd.ms-powerpoint',
+    # Altri formati
     'pdf': 'application/pdf',
     'zip': 'application/zip',
+    'txt': 'text/plain',  # 🆕 File di testo
     # Formati immagine supportati
     'png': 'image/png',
     'jpeg': 'image/jpeg',
@@ -68,14 +75,28 @@ def upload_file(request):
         if file.size > MAX_FILE_SIZE:
             return JsonResponse({'error': 'File troppo grande (max 50MB)'}, status=400)
         
+        # 🔐 CORREZIONE FINALE: Usa original_file_name dal form se disponibile (inviato dal mobile per file cifrati)
+        # Altrimenti usa il nome del file stesso
+        original_file_name_from_request = request.POST.get('original_file_name')
+        
+        if is_encrypted and original_file_name_from_request:
+            # File cifrato: usa il nome originale passato dal mobile
+            original_file_name = original_file_name_from_request
+            logger.info(f"🔐 File cifrato: uso original_file_name dal request: {original_file_name}")
+        else:
+            # File normale: usa il nome del file
+            original_file_name = file.name
+            logger.info(f"📄 File normale: uso file.name: {original_file_name}")
+        
+        file_extension = os.path.splitext(original_file_name)[1][1:].lower()
+        
+        logger.info(f"📄 File originale: {original_file_name}, estensione: {file_extension}")
+        
         # 🔐 MODIFICA E2E: Salta verifica tipo file se cifrato
         if not is_encrypted:
             # Verifica tipo file solo per file non cifrati
-            file_extension = os.path.splitext(file.name)[1][1:].lower()
             if file_extension not in SUPPORTED_FILE_TYPES:
                 return JsonResponse({'error': f'Tipo file non supportato: {file_extension}'}, status=400)
-        else:
-            file_extension = 'bin'  # Estensione fittizia per file cifrati
         
         # Genera nome file univoco
         unique_filename = f"{uuid.uuid4()}_{file.name}"
@@ -84,7 +105,11 @@ def upload_file(request):
         # NUOVO: Conversione Office → PDF per preview
         # 🔐 MODIFICA E2E: Salta conversione per file cifrati
         preview_pdf_path = None
-        if not is_encrypted and file_extension in ['docx', 'xlsx', 'pptx']:
+        office_extensions = ['docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt']  # 🆕 Aggiunti formati vecchi
+        
+        logger.info(f"🔍 Controllo conversione Office: is_encrypted={is_encrypted}, file_extension={file_extension}")
+        
+        if not is_encrypted and file_extension in office_extensions:
             try:
                 logger.info(f"🔄 Conversione Office → PDF per preview: {file.name}")
                 
@@ -129,26 +154,81 @@ def upload_file(request):
                         logger.error(f"❌ Errore creazione PDF fallback: {fallback_error}")
                     
             except Exception as e:
-                logger.error(f"❌ Errore conversione Office → PDF: {e}")
+                logger.error(f"❌ Errore conversione Office → PDF: {e}", exc_info=True)
+        else:
+            if is_encrypted:
+                logger.info(f"⚠️ File Office cifrato: conversione PDF saltata (file_extension={file_extension})")
+            elif file_extension not in office_extensions:
+                logger.info(f"ℹ️ File non-Office: conversione PDF non necessaria (file_extension={file_extension})")
         
         # Determina tipo di messaggio
         message_type = _get_message_type_from_file(file_extension)
         
+        # 🔐 CORREZIONE FINALE: Costruisci URL assoluto come per le immagini (che funzionano)
+        base_url = request.build_absolute_uri('/')
+        # Rimuovi il trailing slash se presente per evitare doppie slash
+        if base_url.endswith('/'):
+            base_url = base_url[:-1]
+        file_url = f"{base_url}/api/media/download/{file_path}"
+        
+        logger.info(f"📄 BACKEND CORREZIONE - Base URL: {base_url}")
+        logger.info(f"📄 BACKEND CORREZIONE - File path: {file_path}")
+        logger.info(f"📄 BACKEND CORREZIONE - File URL generato: {file_url}")
+        
         # Salva metadati (include PDF preview se disponibile)
         metadata = {
-            'fileName': file.name,
-            'fileType': file_extension,
-            'fileUrl': f"/api/media/download/{file_path}",
+            'fileName': original_file_name,  # 🔐 CORREZIONE: Usa il nome originale anche per file cifrati
+            'fileType': file_extension,  # 🔐 CORREZIONE: Usa l'estensione originale (pdf, docx, ecc.)
+            'file_extension': file_extension,  # 🔐 AGGIUNTO: Per compatibilità con FileViewerScreen
+            'fileUrl': file_url,  # 🔐 CORREZIONE: Usa URL assoluto come le immagini
             'fileSize': file.size,
-            'mimeType': SUPPORTED_FILE_TYPES[file_extension]
+            'mimeType': SUPPORTED_FILE_TYPES.get(file_extension, 'application/octet-stream')  # 🔐 CORREZIONE: Usa 'get' per file cifrati
         }
         
-        # NUOVO: Aggiungi URL PDF preview per documenti Office
+        # 🔐 CRITICO: Leggi e aggiungi metadati di cifratura se presenti
+        if is_encrypted:
+            metadata['encrypted'] = True
+            iv = request.POST.get('iv')
+            mac = request.POST.get('mac')
+            original_size = request.POST.get('original_size')
+            local_file_name = request.POST.get('local_file_name')
+            original_file_extension = request.POST.get('original_file_extension')
+            
+            if iv:
+                metadata['iv'] = iv
+                logger.info(f"🔐 File cifrato: IV ricevuto durante upload")
+            if mac:
+                metadata['mac'] = mac
+                logger.info(f"🔐 File cifrato: MAC ricevuto durante upload")
+            if original_size:
+                try:
+                    metadata['original_size'] = int(original_size)
+                except ValueError:
+                    logger.warning(f"⚠️ original_size non valido: {original_size}")
+            if local_file_name:
+                metadata['local_file_name'] = local_file_name
+            if original_file_extension:
+                metadata['original_file_extension'] = original_file_extension
+            
+            logger.info(f"🔐 File cifrato: metadata completi: iv={'presente' if iv else 'assente'}, mac={'presente' if mac else 'assente'}")
+        
+        # 🔐 NUOVO: Aggiungi URL PDF preview per documenti Office (con URL assoluto)
         if preview_pdf_path:
-            metadata['pdfPreviewUrl'] = f"/api/media/download/{preview_pdf_path}"
-            logger.info(f"📄 PDF preview URL: {metadata['pdfPreviewUrl']}")
+            pdf_preview_url = f"{base_url}/api/media/download/{preview_pdf_path}"
+            metadata['pdfPreviewUrl'] = pdf_preview_url
+            logger.info(f"✅ PDF preview URL: {pdf_preview_url}")
         else:
             metadata['pdfPreviewUrl'] = None
+            if file_extension in office_extensions:
+                logger.warning(f"⚠️ Nessun PDF preview generato per file Office: {original_file_name}")
+        
+        # 🔍 Log finale dei metadata
+        logger.info(f"📦 Metadata finali per {original_file_name}:")
+        logger.info(f"   - fileName: {metadata['fileName']}")
+        logger.info(f"   - fileType: {metadata['fileType']}")
+        logger.info(f"   - file_extension: {metadata['file_extension']}")
+        logger.info(f"   - pdfPreviewUrl: {metadata.get('pdfPreviewUrl', 'None')}")
+        logger.info(f"   - encrypted: {metadata.get('encrypted', False)}")
         
         return JsonResponse({
             'success': True,
@@ -161,8 +241,11 @@ def upload_file(request):
         })
         
     except Exception as e:
-        logger.error(f"Errore upload file: {str(e)}")
-        return JsonResponse({'error': 'Errore interno del server'}, status=500)
+        logger.error(f"❌ Errore upload file: {str(e)}", exc_info=True)  # 🆕 Aggiungi stack trace completo
+        return JsonResponse({
+            'error': 'Errore interno del server',
+            'details': str(e)  # 🆕 Includi dettagli errore nella risposta
+        }, status=500)
 
 @csrf_exempt
 @require_http_methods(["POST", "OPTIONS"])
@@ -207,6 +290,15 @@ def upload_image(request):
         if is_encrypted:
             logger.info("🔐 File cifrato rilevato (application/octet-stream)")
         
+        # 🔐 CORREZIONE: Usa original_file_name dal form se disponibile (per file cifrati)
+        original_file_name_from_request = request.POST.get('original_file_name')
+        
+        if is_encrypted and original_file_name_from_request:
+            original_file_name = original_file_name_from_request
+            logger.info(f"🔐 Immagine cifrata: uso original_file_name dal request: {original_file_name}")
+        else:
+            original_file_name = image.name
+        
         # Genera nome file univoco
         unique_filename = f"{uuid.uuid4()}_{image.name}"
         file_path = default_storage.save(f"images/{unique_filename}", ContentFile(image.read()))
@@ -225,10 +317,37 @@ def upload_image(request):
         metadata = {
             'imageUrl': image_url,
             'caption': caption,
-            'fileName': image.name,
+            'fileName': original_file_name,  # 🔐 CORREZIONE: Usa nome originale
             'fileSize': image.size,
             'mimeType': image.content_type
         }
+        
+        # 🔐 CRITICO: Leggi e aggiungi metadati di cifratura se presenti
+        if is_encrypted:
+            metadata['encrypted'] = True
+            iv = request.POST.get('iv')
+            mac = request.POST.get('mac')
+            original_size = request.POST.get('original_size')
+            local_file_name = request.POST.get('local_file_name')
+            original_file_extension = request.POST.get('original_file_extension')
+            
+            if iv:
+                metadata['iv'] = iv
+                logger.info(f"🔐 Immagine cifrata: IV ricevuto durante upload")
+            if mac:
+                metadata['mac'] = mac
+                logger.info(f"🔐 Immagine cifrata: MAC ricevuto durante upload")
+            if original_size:
+                try:
+                    metadata['original_size'] = int(original_size)
+                except ValueError:
+                    logger.warning(f"⚠️ original_size non valido: {original_size}")
+            if local_file_name:
+                metadata['local_file_name'] = local_file_name
+            if original_file_extension:
+                metadata['original_file_extension'] = original_file_extension
+            
+            logger.info(f"🔐 Immagine cifrata: metadata completi: iv={'presente' if iv else 'assente'}, mac={'presente' if mac else 'assente'}")
         
         response = JsonResponse({
             'success': True,
@@ -280,16 +399,26 @@ def upload_video(request):
         if is_encrypted:
             logger.info("🔐 Video cifrato rilevato (application/octet-stream)")
         
+        # 🔐 CORREZIONE: Usa original_file_name dal form se disponibile (per file cifrati)
+        original_file_name_from_request = request.POST.get('original_file_name')
+        
+        if is_encrypted and original_file_name_from_request:
+            original_file_name = original_file_name_from_request
+            logger.info(f"🔐 Video cifrato: uso original_file_name dal request: {original_file_name}")
+        else:
+            original_file_name = video.name
+        
         # Genera nome file univoco
         unique_filename = f"{uuid.uuid4()}_{video.name}"
         file_path = default_storage.save(f"videos/{unique_filename}", ContentFile(video.read()))
         
-        # CORREZIONE: Costruisci URL completo e accessibile per video
+        # 🔐 CORREZIONE FINALE: Usa URL assoluto + endpoint dedicato video per range request iOS
         base_url = request.build_absolute_uri('/')
         # Rimuovi il trailing slash se presente per evitare doppie slash
         if base_url.endswith('/'):
             base_url = base_url[:-1]
-        # CORREZIONE: Rimuovi prefisso videos/ per evitare doppio prefisso
+        # 🎥 USA ENDPOINT DEDICATO: /api/media/video/ (gestisce meglio range request iOS)
+        # Rimuovi prefisso videos/ perché l'endpoint lo aggiunge automaticamente
         clean_file_path = file_path.replace('videos/', '') if file_path.startswith('videos/') else file_path
         video_url = f"{base_url}/api/media/video/{clean_file_path}"
         thumbnail_url = f"{base_url}/api/media/thumbnail/{file_path}"
@@ -303,10 +432,37 @@ def upload_video(request):
             'videoUrl': video_url,
             'thumbnailUrl': thumbnail_url,
             'caption': caption,
-            'fileName': video.name,
+            'fileName': original_file_name,  # 🔐 CORREZIONE: Usa nome originale
             'fileSize': video.size,
             'mimeType': video.content_type
         }
+        
+        # 🔐 CRITICO: Leggi e aggiungi metadati di cifratura se presenti
+        if is_encrypted:
+            metadata['encrypted'] = True
+            iv = request.POST.get('iv')
+            mac = request.POST.get('mac')
+            original_size = request.POST.get('original_size')
+            local_file_name = request.POST.get('local_file_name')
+            original_file_extension = request.POST.get('original_file_extension')
+            
+            if iv:
+                metadata['iv'] = iv
+                logger.info(f"🔐 Video cifrato: IV ricevuto durante upload")
+            if mac:
+                metadata['mac'] = mac
+                logger.info(f"🔐 Video cifrato: MAC ricevuto durante upload")
+            if original_size:
+                try:
+                    metadata['original_size'] = int(original_size)
+                except ValueError:
+                    logger.warning(f"⚠️ original_size non valido: {original_size}")
+            if local_file_name:
+                metadata['local_file_name'] = local_file_name
+            if original_file_extension:
+                metadata['original_file_extension'] = original_file_extension
+            
+            logger.info(f"🔐 Video cifrato: metadata completi: iv={'presente' if iv else 'assente'}, mac={'presente' if mac else 'assente'}")
         
         return JsonResponse({
             'success': True,
@@ -343,21 +499,74 @@ def upload_audio(request):
         if not user_id or not chat_id:
             return JsonResponse({'error': 'user_id e chat_id richiesti'}, status=400)
         
-        # Verifica tipo audio
-        if not audio.content_type.startswith('audio/'):
+        # 🔐 MODIFICA E2E: Accetta anche file cifrati (application/octet-stream)
+        is_encrypted = audio.content_type == 'application/octet-stream'
+        
+        # Verifica tipo audio (salta per file cifrati)
+        if not is_encrypted and not audio.content_type.startswith('audio/'):
             return JsonResponse({'error': 'File non è un audio'}, status=400)
+        
+        if is_encrypted:
+            logger.info("🔐 Audio cifrato rilevato (application/octet-stream)")
+        
+        # 🔐 CORREZIONE: Usa original_file_name dal form se disponibile (per file cifrati)
+        original_file_name_from_request = request.POST.get('original_file_name')
+        
+        if is_encrypted and original_file_name_from_request:
+            original_file_name = original_file_name_from_request
+            logger.info(f"🔐 Audio cifrato: uso original_file_name dal request: {original_file_name}")
+        else:
+            original_file_name = audio.name
         
         # Genera nome file univoco
         unique_filename = f"{uuid.uuid4()}_{audio.name}"
         file_path = default_storage.save(f"audio/{unique_filename}", ContentFile(audio.read()))
         
+        # 🔐 CORREZIONE FINALE: Costruisci URL assoluto come per le immagini (che funzionano)
+        base_url = request.build_absolute_uri('/')
+        # Rimuovi il trailing slash se presente per evitare doppie slash
+        if base_url.endswith('/'):
+            base_url = base_url[:-1]
+        audio_url = f"{base_url}/api/media/download/{file_path}"
+        
+        logger.info(f"🎵 BACKEND CORREZIONE - Base URL: {base_url}")
+        logger.info(f"🎵 BACKEND CORREZIONE - File path: {file_path}")
+        logger.info(f"🎵 BACKEND CORREZIONE - Audio URL generato: {audio_url}")
+        
         metadata = {
-            'audioUrl': f"/api/media/download/{file_path}",
+            'audioUrl': audio_url,  # 🔐 CORREZIONE: Usa URL assoluto come le immagini
             'duration': duration,
-            'fileName': audio.name,
+            'fileName': original_file_name,  # 🔐 CORREZIONE: Usa nome originale
             'fileSize': audio.size,
             'mimeType': audio.content_type
         }
+        
+        # 🔐 CRITICO: Leggi e aggiungi metadati di cifratura se presenti
+        if is_encrypted:
+            metadata['encrypted'] = True
+            iv = request.POST.get('iv')
+            mac = request.POST.get('mac')
+            original_size = request.POST.get('original_size')
+            local_file_name = request.POST.get('local_file_name')
+            original_file_extension = request.POST.get('original_file_extension')
+            
+            if iv:
+                metadata['iv'] = iv
+                logger.info(f"🔐 Audio cifrato: IV ricevuto durante upload")
+            if mac:
+                metadata['mac'] = mac
+                logger.info(f"🔐 Audio cifrato: MAC ricevuto durante upload")
+            if original_size:
+                try:
+                    metadata['original_size'] = int(original_size)
+                except ValueError:
+                    logger.warning(f"⚠️ original_size non valido: {original_size}")
+            if local_file_name:
+                metadata['local_file_name'] = local_file_name
+            if original_file_extension:
+                metadata['original_file_extension'] = original_file_extension
+            
+            logger.info(f"🔐 Audio cifrato: metadata completi: iv={'presente' if iv else 'assente'}, mac={'presente' if mac else 'assente'}")
         
         return JsonResponse({
             'success': True,
@@ -521,11 +730,13 @@ def _handle_range_request(request, file, content_type, file_path):
 def download_video_with_range(request, file_path):
     """
     NUOVO ENDPOINT DEDICATO per video con supporto Range Requests iOS
+    🔐 SICUREZZA E2E: Gli admin NON possono vedere contenuti cifrati end-to-end
     """
     import re
     import os
     from django.http import HttpResponse
     from django.core.files.storage import default_storage
+    from .models import ChatMessage
     
     print(f'🎬 NUOVO ENDPOINT VIDEO - File: {file_path}')
     print(f'🎬 Range Header: {request.META.get("HTTP_RANGE", "NONE")}')
@@ -545,7 +756,49 @@ def download_video_with_range(request, file_path):
             file_path = f"videos/{file_path}"
         
         if not default_storage.exists(file_path):
+            print(f'🎬 ERRORE: File non trovato: {file_path}')
             return HttpResponse("Video non trovato", status=404)
+        
+        # 🔐 SICUREZZA E2E: Verifica se il video è cifrato E2E e blocca admin
+        # IMPORTANTE: Questo controllo non deve bloccare gli utenti normali
+        try:
+            # Cerca il messaggio associato a questo file solo se l'utente è autenticato
+            if request.user.is_authenticated and (request.user.is_staff or request.user.is_superuser):
+                file_name = os.path.basename(file_path)
+                print(f'🔐 Verifica E2E per admin: file_name={file_name}')
+                # Cerca nei messaggi video che contengono questo file
+                video_messages = ChatMessage.objects.filter(
+                    message_type='video',
+                    metadata__videoUrl__icontains=file_name
+                ) | ChatMessage.objects.filter(
+                    message_type='video',
+                    metadata__url__icontains=file_name
+                )
+                
+                # Verifica se almeno un messaggio con questo video è cifrato E2E
+                is_e2e_encrypted = False
+                for msg in video_messages[:5]:  # Limita a 5 messaggi per performance
+                    metadata = msg.metadata or {}
+                    # Verifica se ci sono metadata di cifratura E2E
+                    if (metadata.get('encrypted') is True or 
+                        metadata.get('iv') is not None or 
+                        metadata.get('mac') is not None):
+                        is_e2e_encrypted = True
+                        print(f'🔐 Video cifrato E2E rilevato per file: {file_name}')
+                        break
+                
+                # Se è cifrato E2E e l'utente è admin/staff, blocca l'accesso
+                if is_e2e_encrypted:
+                    print(f'🚫 ACCESSO BLOCCATO: Admin non può vedere contenuti cifrati E2E')
+                    return HttpResponse(
+                        "Accesso negato: I contenuti cifrati end-to-end non sono accessibili agli amministratori per preservare la sicurezza della cifratura.",
+                        status=403
+                    )
+        except Exception as e:
+            # Se c'è un errore nel controllo, logga ma NON bloccare il download
+            # (gli utenti normali devono sempre poter accedere)
+            print(f'⚠️ Errore controllo E2E per admin (ignorato): {e}')
+            # Procedi con il download normale
         
         file = default_storage.open(file_path)
         
@@ -614,7 +867,10 @@ def download_video_with_range(request, file_path):
 def download_file(request, file_path):
     """
     Endpoint per download di file
+    🔐 SICUREZZA E2E: Gli admin NON possono vedere contenuti cifrati end-to-end
     """
+    from .models import ChatMessage
+    
     print(f'🚨🚨🚨 DOWNLOAD_FILE CHIAMATO - File: {file_path} - Range: {request.META.get("HTTP_RANGE", "NONE")} 🚨🚨🚨')
     try:
         # Gestisci richieste OPTIONS per CORS
@@ -631,6 +887,58 @@ def download_file(request, file_path):
             file_path = f"images/{file_path}"
             
         if default_storage.exists(file_path):
+            # 🔐 SICUREZZA E2E: Verifica se il file è cifrato E2E e blocca admin
+            # IMPORTANTE: Questo controllo non deve bloccare gli utenti normali
+            try:
+                # Cerca il messaggio associato a questo file solo se l'utente è admin
+                if request.user.is_authenticated and (request.user.is_staff or request.user.is_superuser):
+                    file_name = os.path.basename(file_path)
+                    # Determina il tipo di messaggio in base al percorso
+                    message_type = None
+                    if 'images/' in file_path:
+                        message_type = 'image'
+                        metadata_key = 'imageUrl'
+                    elif 'videos/' in file_path:
+                        message_type = 'video'
+                        metadata_key = 'videoUrl'
+                    elif 'audio/' in file_path:
+                        message_type = 'audio'
+                        metadata_key = 'audioUrl'
+                    else:
+                        message_type = 'file'
+                        metadata_key = 'fileUrl'
+                    
+                    # Cerca il messaggio associato a questo file
+                    file_messages = ChatMessage.objects.filter(
+                        message_type=message_type
+                    ).filter(
+                        **{f'metadata__{metadata_key}__icontains': file_name}
+                    )
+                    
+                    # Verifica se almeno un messaggio con questo file è cifrato E2E
+                    is_e2e_encrypted = False
+                    for msg in file_messages[:5]:  # Limita a 5 messaggi per performance
+                        metadata = msg.metadata or {}
+                        # Verifica se ci sono metadata di cifratura E2E
+                        if (metadata.get('encrypted') is True or 
+                            metadata.get('iv') is not None or 
+                            metadata.get('mac') is not None):
+                            is_e2e_encrypted = True
+                            print(f'🔐 File cifrato E2E rilevato per file: {file_name}')
+                            break
+                    
+                    # Se è cifrato E2E e l'utente è admin/staff, blocca l'accesso
+                    if is_e2e_encrypted:
+                        print(f'🚫 ACCESSO BLOCCATO: Admin non può vedere contenuti cifrati E2E')
+                        return HttpResponse(
+                            "Accesso negato: I contenuti cifrati end-to-end non sono accessibili agli amministratori per preservare la sicurezza della cifratura.",
+                            status=403
+                        )
+            except Exception as e:
+                # Se c'è un errore nel controllo, logga ma NON bloccare il download
+                # (gli utenti normali devono sempre poter accedere)
+                print(f'⚠️ Errore controllo E2E per admin (ignorato): {e}')
+                # Procedi con il download normale
             file = default_storage.open(file_path)
             
             # Determina il content type basato sull'estensione
@@ -698,6 +1006,107 @@ def get_thumbnail(request, file_path):
     except Exception as e:
         logger.error(f"Errore generazione thumbnail: {str(e)}")
         return JsonResponse({'error': 'Errore interno del server'}, status=500)
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def convert_office_to_pdf(request):
+    """
+    🆕 Endpoint per convertire file Office decifrati in PDF on-the-fly
+    Riceve un file Office, lo converte in PDF, lo restituisce senza salvarlo
+    """
+    logger.info("╔═══════════════════════════════════════════════════════════╗")
+    logger.info("║ 🔄 convert_office_to_pdf - Conversione temporanea        ║")
+    logger.info("╚═══════════════════════════════════════════════════════════╝")
+    
+    try:
+        # Verifica che sia stato inviato un file
+        if 'file' not in request.FILES:
+            return JsonResponse({'error': 'Nessun file fornito'}, status=400)
+        
+        file = request.FILES['file']
+        original_filename = file.name
+        
+        logger.info(f"📄 File ricevuto: {original_filename}")
+        logger.info(f"📄 Dimensione: {file.size} bytes")
+        
+        # Verifica estensione
+        file_extension = os.path.splitext(original_filename)[1][1:].lower()
+        office_extensions = ['docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt']
+        
+        if file_extension not in office_extensions:
+            return JsonResponse({
+                'error': f'Tipo file non supportato: {file_extension}. Supportati: {", ".join(office_extensions)}'
+            }, status=400)
+        
+        logger.info(f"✅ Estensione valida: {file_extension}")
+        
+        # Salva temporaneamente il file Office
+        temp_dir = os.path.join(settings.MEDIA_ROOT, 'temp_conversions')
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        temp_office_path = os.path.join(temp_dir, f"{uuid.uuid4()}_{original_filename}")
+        
+        with open(temp_office_path, 'wb+') as temp_file:
+            for chunk in file.chunks():
+                temp_file.write(chunk)
+        
+        logger.info(f"💾 File salvato temporaneamente: {temp_office_path}")
+        
+        # Converti in PDF
+        logger.info(f"🔄 Avvio conversione Office → PDF...")
+        pdf_path = office_converter.convert_to_pdf(temp_office_path)
+        
+        if not pdf_path or not os.path.exists(pdf_path):
+            # Rimuovi file temporaneo
+            if os.path.exists(temp_office_path):
+                os.remove(temp_office_path)
+            
+            return JsonResponse({
+                'error': 'Conversione PDF fallita',
+                'details': 'LibreOffice non è riuscito a convertire il file'
+            }, status=500)
+        
+        logger.info(f"✅ PDF generato: {pdf_path}")
+        
+        # Leggi il PDF e restituiscilo
+        with open(pdf_path, 'rb') as pdf_file:
+            pdf_content = pdf_file.read()
+        
+        logger.info(f"✅ PDF letto: {len(pdf_content)} bytes")
+        
+        # Rimuovi file temporanei
+        try:
+            if os.path.exists(temp_office_path):
+                os.remove(temp_office_path)
+                logger.info(f"🗑️ File Office temporaneo eliminato")
+            
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+                logger.info(f"🗑️ PDF temporaneo eliminato")
+        except Exception as e:
+            logger.warning(f"⚠️ Errore pulizia file temporanei: {e}")
+        
+        # Restituisci il PDF
+        response = HttpResponse(pdf_content, content_type='application/pdf')
+        response['Content-Disposition'] = f'inline; filename="{os.path.splitext(original_filename)[0]}.pdf"'
+        response['Access-Control-Allow-Origin'] = '*'
+        
+        logger.info("✅ PDF restituito con successo")
+        logger.info("═══════════════════════════════════════════════════════════")
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"❌ Errore conversione Office → PDF: {str(e)}")
+        import traceback
+        logger.error(f"❌ Stack trace: {traceback.format_exc()}")
+        logger.info("═══════════════════════════════════════════════════════════")
+        
+        return JsonResponse({
+            'error': 'Errore interno del server',
+            'details': str(e)
+        }, status=500)
+
 
 def _get_message_type_from_file(file_extension):
     """
