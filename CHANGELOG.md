@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.3.1] - 2025-11-01
+
+### 🔧 **MAJOR FIX: PDF Viewer e File Encryption**
+
+#### ✅ **Bug Critici Risolti**
+- **📄 PDF Viewer Loop**: Risolto loop infinito nella decifratura e visualizzazione PDF
+- **🔐 PDF Encryption**: Corretto fallback per destinatari quando file locale non disponibile
+- **⚠️ Null Safety**: Risolti errori null-safety in `pdf_preview_widget.dart`
+- **🔄 File Loading**: Gestione corretta file cifrati per mittente e destinatario
+
+#### 🔄 **Correzioni PDF**
+- **Loop Infinito**: Aggiunto check `_convertedPdfUrl` per evitare re-decifratura continua
+- **PDF Cifrati**: PDF nativi cifrati ora decifrati correttamente senza conversione backend
+- **Office Files**: File Office cifrati convertiti in PDF solo se necessario
+- **Fallback Destinatario**: Se file locale manca, scarica e decifra dal server automaticamente
+
+#### 🐛 **Bug Fixes**
+- **`pdf_preview_widget.dart`**: Risolti accessi null su `File?` con safe navigation operator
+- **`file_viewer_screen.dart`**: Corretto ciclo di decifratura per PDF cifrati
+- **Decifratura File**: Ottimizzata gestione file locali vs server per destinatari
+- **Metadata Handling**: Corretta estrazione `sender_id` per decifratura destinatario
+
+#### 🎯 **Risultato Finale**
+- **✅ PDF Cifrati**: Decifrati e visualizzati correttamente
+- **✅ Office Files**: Convertiti e mostrati in PDF
+- **✅ No Loop**: Nessun loop infinito nella visualizzazione
+- **✅ Destinatari**: Ricevono e aprono file correttamente
+
+---
+
 ## [1.3.0] - 2025-10-01
 
 ### 🔧 **MAJOR FIX: Compatibilità iOS/macOS 26.0.1**
