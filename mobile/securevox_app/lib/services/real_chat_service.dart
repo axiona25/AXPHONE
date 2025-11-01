@@ -385,6 +385,9 @@ class RealChatService extends ChangeNotifier {
     } else {
       _cachedChats.insert(0, chatWithParticipants);
     }
+    
+    // CORREZIONE: Notifica i listener per aggiornare l'UI
+    _instance.notifyListeners();
   }
 
   /// Rimuove una chat dalla cache
@@ -476,6 +479,14 @@ class RealChatService extends ChangeNotifier {
   /// Aggiorna l'ultimo messaggio di una chat
   static void updateLastMessage(String chatId, String messageContent) {
     try {
+      // ⚡ FIX: Se il messaggio non è decifrato (placeholder), mantieni il precedente
+      if (messageContent == '...' || 
+          messageContent.contains('[Messaggio cifrato]') || 
+          messageContent.contains('[Errore decifratura]')) {
+        print('⚠️ RealChatService.updateLastMessage - Messaggio non decifrato, mantengo precedente per chat $chatId');
+        return; // Non aggiornare, mantieni il messaggio precedente
+      }
+      
       final chatIndex = _cachedChats.indexWhere((chat) => chat.id == chatId);
       if (chatIndex != -1) {
         final updatedChat = _cachedChats[chatIndex].copyWith(
