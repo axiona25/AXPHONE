@@ -258,11 +258,25 @@ class MediaService {
         if (encryptionMetadata != null) {
           result['encryption'] = encryptionMetadata;
           print('🔐 MediaService.uploadFile - Metadata cifratura aggiunti al risultato');
-        } else if (result['metadata'] != null && result['metadata']['encrypted'] == true) {
-          // 🔐 CORREZIONE: Estrai metadata E2E dal backend se non presenti lato client
-          final backendEncryption = Map<String, dynamic>.from(result['metadata']);
-          result['encryption'] = backendEncryption;
-          print('🔐 MediaService.uploadFile - Metadata E2E estratti dal backend');
+        }
+        
+        // 🔐 CORREZIONE: SEMPRE estrai metadata E2E dal backend se encrypted=true
+        if (result['metadata'] != null && result['metadata']['encrypted'] == true) {
+          final backendMetadata = result['metadata'] as Map<String, dynamic>;
+          if (result['encryption'] == null) {
+            result['encryption'] = {};
+          }
+          // Fondo metadata backend in encryption (sovrascrive quelli client se duplicati)
+          result['encryption'] = {
+            ...result['encryption'],
+            'iv': backendMetadata['iv'],
+            'mac': backendMetadata['mac'],
+            'encrypted': backendMetadata['encrypted'],
+            'original_size': backendMetadata['original_size'],
+            if (backendMetadata['local_file_name'] != null) 'local_file_name': backendMetadata['local_file_name'],
+            if (backendMetadata['original_file_extension'] != null) 'original_file_extension': backendMetadata['original_file_extension'],
+          };
+          print('🔐 MediaService.uploadFile - Metadata E2E estesi dal backend');
         }
         
         // 🧹 Rimuovi file temporaneo
