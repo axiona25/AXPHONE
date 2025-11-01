@@ -1227,7 +1227,7 @@ class _FileViewerScreenState extends State<FileViewerScreen> {
         // 4️⃣ Aggiorna lo stato con il path del PDF
         if (mounted) {
           setState(() {
-            _convertedPdfUrl = pdfPath;
+            _convertedPdfUrl = 'file://${pdfFile.absolute.path}';
             _isConverting = false;
           });
         }
