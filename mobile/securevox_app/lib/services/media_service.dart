@@ -254,9 +254,15 @@ class MediaService {
       if (response.statusCode == 200) {
         final result = jsonData['data'] as Map<String, dynamic>;
         
-        // 🔐 Aggiungi metadata cifratura
+        // 🔐 Aggiungi metadata cifratura se presente (client-side)
         if (encryptionMetadata != null) {
           result['encryption'] = encryptionMetadata;
+          print('🔐 MediaService.uploadFile - Metadata cifratura aggiunti al risultato');
+        } else if (result['metadata'] != null && result['metadata']['encrypted'] == true) {
+          // 🔐 CORREZIONE: Estrai metadata E2E dal backend se non presenti lato client
+          final backendEncryption = Map<String, dynamic>.from(result['metadata']);
+          result['encryption'] = backendEncryption;
+          print('🔐 MediaService.uploadFile - Metadata E2E estratti dal backend');
         }
         
         // 🧹 Rimuovi file temporaneo
